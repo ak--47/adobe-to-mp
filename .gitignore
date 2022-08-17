@@ -1,4 +1,10 @@
 # Logs
+.DS_store
+scratch.js
+.env
+sampleData/*
+tmp/*
+!tmp/.gitkeep
 logs
 *.log
 npm-debug.log*
