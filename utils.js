@@ -98,7 +98,7 @@ exports.enrichEventList = function (source, enrich) {
 
 }
 
-exports.applyLookups = async function (raw = [], lookups = {}) {
+exports.applyLookups = function (raw = [], lookups = {}) {
     const target = clone(raw)
 
     // evar lookup
@@ -138,14 +138,18 @@ exports.applyLookups = async function (raw = [], lookups = {}) {
             //resolve evars
             if (key.includes('post_evar')) {
                 //evars tend to be JSON
-				try {
-					event[evarKeyMap[key]] = JSON.parse(event[key])
-				}
+                if (event[key]?.startsWith('{') && event[key]?.endsWith('}')) {
+                    try {
+                        event[evarKeyMap[key]] = JSON.parse(event[key])
+                    } catch (e) {
+                        event[evarKeyMap[key]] = event[key]
+                    }
+                }
 
-				catch (e) {
+				else {
 					event[evarKeyMap[key]] = event[key]
 				}
-				
+                
                 delete event[key]
             }
 
@@ -210,7 +214,7 @@ exports.adobeToMp = function (events = []) {
                 ...adobe
             }
         }
-		// $insert_id
+        // $insert_id
         // mp = addInsert(mp)
         return mp
 
@@ -219,6 +223,16 @@ exports.adobeToMp = function (events = []) {
     return transform;
 }
 
+exports.time = function (label = `foo`, directive = `start`) {
+    if (directive === `start`) {
+        console.time(label)
+    } else if (directive === `stop`) {
+        console.timeEnd(label)
+    }
+
+}
+
+//LOCAL
 const addInsert = function (event) {
     let hash = md5(event);
     event.properties.$insert_id = hash;
