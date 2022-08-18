@@ -3,7 +3,7 @@
 const path = require('path')
 const fs = require('fs').promises
 const parseTSV = require('papaparse')
-const { zipObject, mapKeys } = require('lodash')
+const { zipObject, mapKeys, find } = require('lodash')
 const md5 = require('md5')
 
 exports.listFiles = async function (dir = "./") {
@@ -74,8 +74,45 @@ exports.loadTSV = async function (filePath = "", hasHeaders = false) {
     return parseTSV.parse(file, { header: hasHeaders }).data;
 }
 
+exports.enrichEventList = function (source, enrich) {
+    let target = clone(source);
+    for (let dim of target.event_list) {
+        if (dim.length === 2) {
+            let searchValue = dim[1]?.trim()?.toLowerCase()?.replace(/\s/g, '')?.replace("instanceof", "")?.replace("customevent", "event");
+
+            let searchResults = find(enrich, function (value, index, collection) {
+                return value[0] === searchValue
+            })
+
+            if (searchResults) {
+                dim[1] = searchResults[1]
+            }
+
+        }
+
+
+    }
+
+
+    return target
+
+}
+
 exports.applyLookups = async function (raw = [], lookups = {}) {
     const target = clone(raw)
+
+    // evar lookup
+    const evarKeyMap = {};
+    for (const evar of lookups.evars) {
+        evarKeyMap[`post_${evar[0]}`] = evar[1]
+    }
+
+    // prop lookup
+    const propKeyMap = {};
+    for (const prop of lookups.custProps) {
+        propKeyMap[`post_${prop[0]}`] = prop[1]
+    }
+
     for (const event of target) {
         for (let key in event) {
             if (lookups[key]) {
@@ -97,12 +134,33 @@ exports.applyLookups = async function (raw = [], lookups = {}) {
 
                 event.post_event_list_resolved = eventNameLookup;
             }
+
+            //resolve evars
+            if (key.includes('post_evar')) {
+                //evars tend to be JSON
+				try {
+					event[evarKeyMap[key]] = JSON.parse(event[key])
+				}
+
+				catch (e) {
+					event[evarKeyMap[key]] = event[key]
+				}
+				
+                delete event[key]
+            }
+
+            //resolve props
+            if (key.includes('post_prop')) {
+                event[propKeyMap[key]] = event[key]
+                delete event[key]
+            }
         }
     }
 
     return target;
 }
 
+//no longer used
 exports.applyEvars = async function (raw = [], evars) {
     //rename the evar keys
     const keyMap = {};
@@ -139,7 +197,7 @@ exports.adobeToMp = function (events = []) {
         //this is garbage
         let eventName;
         try {
-            eventName = adobe.post_event_list_resolved[0]
+            eventName = `hit`
         } catch (e) {
             eventName = `unknown`
         }
@@ -152,7 +210,8 @@ exports.adobeToMp = function (events = []) {
                 ...adobe
             }
         }
-        mp = addInsert(mp)
+		// $insert_id
+        // mp = addInsert(mp)
         return mp
 
     })
