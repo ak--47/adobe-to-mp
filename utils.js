@@ -5,6 +5,9 @@ const fs = require('fs').promises
 const parseTSV = require('papaparse')
 const { zipObject, mapKeys, find } = require('lodash')
 const md5 = require('md5')
+const { execSync } = require("child_process")
+const makeDir = require('fs').mkdirSync
+
 
 exports.listFiles = async function (dir = "./") {
     let fileList = await fs.readdir(dir);
@@ -13,6 +16,67 @@ exports.listFiles = async function (dir = "./") {
         results[fileName.split('.')[0]] = path.resolve(`${dir}/${fileName}`);
     }
     return results
+}
+
+exports.organizeRaw = function (fileMapping) {
+    const filenames = Object.values(fileMapping);
+    const dataFiles = filenames.filter(f => f.endsWith('.tsv.gz'));
+    const lookups = filenames.filter(f => f.endsWith('lookup_data.tar.gz'));
+
+    //organize raw files
+    const organized = {};
+    for (const filePath of dataFiles) {
+        const suffix = filePath.split('.tsv.gz')[0].split('-').slice(-1);
+        if (organized[suffix]) {
+            organized[suffix].raw.push(filePath)
+        } else {
+            organized[suffix] = {
+                raw: [],
+                lookup: ``
+            }
+
+            organized[suffix].raw.push(filePath)
+        }
+    }
+
+    //add lookups
+    for (const filePath of lookups) {
+        const suffix = filePath.split('-lookup_data.tar.gz')[0].split('-').slice(-1)
+        organized[suffix].lookup = filePath
+    }
+
+    return organized
+
+}
+
+exports.extractFile = async function (filePath, subDir = "") {
+    const uid = process.getuid()
+    const gid = process.getgid()
+    const targetDir = path.resolve(`./tmp/${subDir}`);
+    try {
+        const newDir = makeDir(targetDir, 0777);
+    } catch (err) {
+        if (err.code !== 'EEXIST') {
+            throw err;
+        }
+    }
+    let target;
+    if (subDir) {
+        target = targetDir
+    } else {
+        target = path.resolve(`${targetDir}/${filePath.split('.gz')[0].split("/").slice(-1)}`)
+    }
+
+    // https://manpages.ubuntu.com/manpages/xenial/man1/dtrx.1.html
+    const dtrx = execSync(`dtrx --recursive --flat --overwrite ${filePath}`, {cwd: targetDir});
+
+    return target
+
+}
+
+exports.removeFile = function (fileNameOrPath) {
+	const removed = execSync(`rm -rf ${fileNameOrPath}`)
+	return true;
 }
 
 exports.getHeaders = async function (filePath = "./") {
@@ -144,12 +208,10 @@ exports.applyLookups = function (raw = [], lookups = {}) {
                     } catch (e) {
                         event[evarKeyMap[key]] = event[key]
                     }
+                } else {
+                    event[evarKeyMap[key]] = event[key]
                 }
 
-				else {
-					event[evarKeyMap[key]] = event[key]
-				}
-                
                 delete event[key]
             }
 

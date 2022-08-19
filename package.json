@@ -4,7 +4,8 @@
   "description": "ETL from adbobe omniture to mixpanel",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon --inspect scratch.js"
+    "dev": "nodemon --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.js",
+    "prune": "rm -rf ./tmp/*"
   },
   "repository": {
     "type": "git",
