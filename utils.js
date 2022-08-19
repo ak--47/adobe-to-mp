@@ -5,7 +5,7 @@ const fs = require('fs').promises
 const parseTSV = require('papaparse')
 const { zipObject, mapKeys, find } = require('lodash')
 const md5 = require('md5')
-const { spawn } = require("child_process")
+const { execSync } = require("child_process")
 const makeDir = require('fs').mkdirSync
 
 
@@ -68,16 +68,15 @@ exports.extractFile = async function (filePath, subDir = "") {
     }
 
     // https://manpages.ubuntu.com/manpages/xenial/man1/dtrx.1.html
-    const dtrx = spawn(`dtrx`, ["--recursive", "--flat", "--overwrite", filePath], { cwd: targetDir, uid, gid });
-
-	// const perms = spawn(`chmod`, ["-R", "777", "targetDir"])
+    const dtrx = execSync(`dtrx --recursive --flat --overwrite ${filePath}`, {cwd: targetDir});
 
     return target
 
 }
 
-exports.removeFile = function (fileNamePartial) {
-
+exports.removeFile = function (fileNameOrPath) {
+	const removed = execSync(`rm -rf ${fileNameOrPath}`)
+	return true;
 }
 
 exports.getHeaders = async function (filePath = "./") {

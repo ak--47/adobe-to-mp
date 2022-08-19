@@ -18,7 +18,7 @@ async function main(folder, z_Guides = {
     const tasks = 0;
     u.time('identify pieces', 'stop')
 
-    console.log(`found ${jobs.length} jobs to do`)
+    console.log(`found ${jobs.length} jobs to do\n`)
     let result = []
 
     for (const job of jobs) {
@@ -80,7 +80,7 @@ async function main(folder, z_Guides = {
                 recordType: `event`, //event, user, OR group
                 streamSize: 27, // highWaterMark for streaming chunks (2^27 ~= 134MB)
                 region: `US`, //US or EU
-                recordsPerBatch: 2000, //max # of records in each batch
+                recordsPerBatch: 1000, //max # of records in each batch
                 bytesPerBatch: 2 * 1024 * 1024, //max # of bytes in each batch
                 strict: false, //use strict mode?
                 logs: false, //print to stdout?
@@ -96,12 +96,17 @@ async function main(folder, z_Guides = {
 			u.time(`task time`, 'stop')
 
 			//remove the file...
+			u.removeFile(rawDataPath)
         }
 
+		//remove the lookup
+		u.removeFile(lookup)
 		u.time('job time', 'stop')
+		console.log('\n')
     }
 	
 	u.time('total time', 'stop')
+	console.log('\n\n')
     return result
 }
 
