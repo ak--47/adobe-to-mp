@@ -2,6 +2,7 @@
 
 const path = require('path')
 const fs = require('fs').promises
+const { createReadStream } = require('fs')
 const parseTSV = require('papaparse')
 const { zipObject, mapKeys, find } = require('lodash')
 const md5 = require('md5')
@@ -68,15 +69,15 @@ exports.extractFile = async function (filePath, subDir = "") {
     }
 
     // https://manpages.ubuntu.com/manpages/xenial/man1/dtrx.1.html
-    const dtrx = execSync(`dtrx --recursive --flat --overwrite ${filePath}`, {cwd: targetDir});
+    const dtrx = execSync(`dtrx --recursive --flat --overwrite ${filePath}`, { cwd: targetDir });
 
     return target
 
 }
 
 exports.removeFile = function (fileNameOrPath) {
-	const removed = execSync(`rm -rf ${fileNameOrPath}`)
-	return true;
+    const removed = execSync(`rm -rf ${fileNameOrPath}`)
+    return true;
 }
 
 exports.getHeaders = async function (filePath = "./") {
@@ -86,12 +87,32 @@ exports.getHeaders = async function (filePath = "./") {
 }
 
 exports.parseRaw = async function (rawPath = "./", headers = []) {
-    let rawData = await fs.readFile(rawPath, 'utf-8');
-    let parseRaw = parseTSV.parse(rawData).data;
-    let labeled = parseRaw.map((row) => {
-        return zipObject(headers, row)
+
+    return new Promise((resolve, reject) => {
+        let rawStream = createReadStream(rawPath, 'utf-8');
+        let parseRaw = [];
+        let parseStream = parseTSV.parse(rawStream, {
+            step: function (results, parser) {
+                chunk(results, parser);
+            },
+            complete: function (results, file) {
+                resolve(finish(results, file))
+            }
+        });
+
+        function chunk(results, parser) {
+            parseRaw.push(results.data)
+        }
+
+
+        function finish() {
+			let labeled = parseRaw.map((row) => {
+                return zipObject(headers, row)
+            })
+            return labeled;
+        }
+
     })
-    return labeled;
 }
 
 exports.getLookups = async function (metas = {}) {
