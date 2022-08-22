@@ -2,6 +2,7 @@ const u = require('./utils.js');
 const path = require('path');
 const fs = require('fs').promises
 const mpImport = require('mixpanel-import');
+const os = require('os')
 
 
 async function main(folder, z_Guides = {
@@ -9,6 +10,15 @@ async function main(folder, z_Guides = {
     custEvents: `./`,
     custProps: `./`
 }, mpCreds) {
+
+	// max out memory for mode = fast
+	if (process.env.FAST) {		
+		const totalRAM = os.totalmem();
+		const totalRamMB = Math.floor(totalRAM/(1024 * 1024));
+		const useMostOfIt = Math.floor(totalRamMB * .80)
+		process.env['NODE_OPTIONS'] += ` --max-old-space-size=${useMostOfIt}`
+	}
+
 	u.time('total time')
     // FIND ALL THE FILES
     u.time('identify pieces')
