@@ -11,13 +11,13 @@ async function main(folder, z_Guides = {
     custProps: `./`
 }, mpCreds) {
 
-	// max out memory for mode = fast
-	if (process.env.FAST) {		
-		const totalRAM = os.totalmem();
-		const totalRamMB = Math.floor(totalRAM/(1024 * 1024));
-		const useMostOfIt = Math.floor(totalRamMB * .80)
-		process.env['NODE_OPTIONS'] += ` --max-old-space-size=${useMostOfIt}`
-	}
+	// // max out memory for mode = fast
+	// if (process.env.FAST) {		
+	// 	const totalRAM = os.totalmem();
+	// 	const totalRamMB = Math.floor(totalRAM/(1024 * 1024));
+	// 	const useMostOfIt = Math.floor(totalRamMB * .80)
+	// 	process.env['NODE_OPTIONS'] += ` --max-old-space-size=${useMostOfIt}`
+	// }
 
 	u.time('total time')
     // FIND ALL THE FILES
