@@ -361,7 +361,11 @@ const removeNulls = function (obj) {
 }
 
 const clone = function (thing, opts) {
-    var newObject = {};
+    //don't clone in fast mode
+	if (process.env.FAST) {
+		return thing;
+	}
+	var newObject = {};
     if (thing instanceof Array) {
         return thing.map(function (i) { return clone(i, opts); });
     } else if (thing instanceof Date) {
