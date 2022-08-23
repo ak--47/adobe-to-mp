@@ -94,7 +94,7 @@ async function main(folder, z_Guides = {
 
 
             let rawStream = createReadStream(rawDataPath, { encoding: 'utf-8' });
-            let pipeline = await orchestratePipeline(rawStream, rawDataPath, colHeaders, allLookups, mpOptions);
+            let pipeline = await orchestratePipeline(rawStream, rawDataPath, colHeaders, allLookups, mpOptions, mpCreds);
 
         }
 
@@ -110,7 +110,7 @@ async function main(folder, z_Guides = {
 }
 
 
-async function orchestratePipeline(stream, rawDataPath, colHeaders, allLookups, mpOptions) {
+async function orchestratePipeline(stream, rawDataPath, colHeaders, allLookups, mpOptions, mpCreds) {
     u.time(`task time`)
     let responses = [];
     return new Promise((resolve, reject) => {
@@ -123,19 +123,6 @@ async function orchestratePipeline(stream, rawDataPath, colHeaders, allLookups, 
             (data) => { return p.cleanObject(data) },
             (data) => { return p.adobeToMp(data) },
             new Batch({ batchSize: 1000 }),
-            (batch) => {
-                return batch.filter((e) => {
-                    if (e.properties.distinct_id.includes('undefined')) {
-                        return false;
-                    } else if (Number(e.properties.time)) {
-                        return false;
-                    } else {
-                        return true
-                    }
-
-
-                })
-            },
             async (batch) => {
                 return await mpImport(mpCreds, batch, mpOptions)
             }
