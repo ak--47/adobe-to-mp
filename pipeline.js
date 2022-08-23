@@ -125,7 +125,7 @@ exports.adobeToMp = function (adobe = {}) {
         }
     }
     // $insert_id
-    mp = addInsert(mp)
+    // mp = addInsert(mp)
 	// if (isNaN(mp.properties.time)) {
 	// 	debugger;
 	// }
