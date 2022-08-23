@@ -84,7 +84,7 @@ async function main(folder, z_Guides = {
                 region: `US`, //US or EU
                 recordsPerBatch: 1000, //max # of records in each batch
                 bytesPerBatch: 2 * 1024 * 1024, //max # of bytes in each batch
-                strict: true, //use strict mode?
+                strict: false, //use strict mode?
                 logs: false, //print to stdout?
 				streamFormat: 'json',
                 //a function reference to be called on every record
