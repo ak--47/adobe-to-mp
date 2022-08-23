@@ -25,6 +25,7 @@
     "md5": "^2.3.0",
     "mixpanel-import": "^1.0.9",
     "papaparse": "^5.3.2",
+    "split2": "^4.1.0",
     "stream-chain": "^2.2.5",
     "stream-json": "^1.7.4"
   }

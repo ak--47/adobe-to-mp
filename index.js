@@ -7,7 +7,7 @@ const mpImport = require('mixpanel-import');
 const os = require('os')
 const chain = require('stream-chain');
 const Batch = require('stream-json/utils/Batch');
-
+const split = require('split2')
 
 
 async function main(folder, z_Guides = {
@@ -54,7 +54,7 @@ async function main(folder, z_Guides = {
         loopTasks: for (const task of tasks) {
 
             console.log(`doing task ${currentTask} of ${totalTasks} for job ${job}`)
-            u.time(`task time`)
+            // u.time(`task time`)
             u.time('extract')
             const rawDataPath = await u.extractFile(task)
             u.time('extract', 'stop')
@@ -78,7 +78,7 @@ async function main(folder, z_Guides = {
             }
             u.time('parse lookups', 'stop')
 
-			 const mpOptions = {
+            const mpOptions = {
                 recordType: `event`, //event, user, OR group
                 streamSize: 27, // highWaterMark for streaming chunks (2^27 ~= 134MB)
                 region: `US`, //US or EU
@@ -86,50 +86,20 @@ async function main(folder, z_Guides = {
                 bytesPerBatch: 2 * 1024 * 1024, //max # of bytes in each batch
                 strict: false, //use strict mode?
                 logs: false, //print to stdout?
-				streamFormat: 'json',
+                streamFormat: 'json',
                 //a function reference to be called on every record
                 //useful if you need to transform the data
                 transformFunc: function noop(a) { return a }
             }
 
-			let responses = [];
 
-            // each 'task' is a chained pipeline using the extracted data
-            // https://www.npmjs.com/package/stream-chain
-            const etl = new chain([
-                (stream) => { return p.parseRaw(stream).data },
-                (data) => { return p.applyHeaders(data, colHeaders) },
-                (data) => { return p.applyLookups(data, allLookups) },
-                (data) => { return p.cleanObject(data) },
-                (data) => { return p.adobeToMp(data) },
-				new Batch({ batchSize: 1000 }),
-                async (batch) => { 
-					return await mpImport(mpCreds, batch, mpOptions)
-				}
-            ])
+            let rawStream = createReadStream(rawDataPath, { encoding: 'utf-8' });
+            let pipeline = await orchestratePipeline(rawStream, rawDataPath, colHeaders, allLookups, mpOptions);
 
-            etl.on('error', (error) => {
-                console.log(error)
-            });
-
-			etl.on('data', (res, f, o)=>{
-				responses.push(res.responses)
-			})
-			
-			etl.on('end', (res) => {
-				u.time(`task time`, `stop`)
-				//remove the file
-				u.removeFile(rawDataPath)
-			});
-
-            let rawStream = createReadStream(rawDataPath, 'utf-8');
-            await rawStream.pipe(etl);
-
-           
         }
 
         //remove the lookup
-        // u.removeFile(lookup)
+        u.removeFile(lookup)
         u.time('job time', 'stop')
         console.log('\n')
     }
@@ -139,5 +109,57 @@ async function main(folder, z_Guides = {
     return result
 }
 
+
+async function orchestratePipeline(stream, rawDataPath, colHeaders, allLookups, mpOptions) {
+    u.time(`task time`)
+    let responses = [];
+    return new Promise((resolve, reject) => {
+        // each 'task' is a chained pipeline using the extracted data
+        // https://www.npmjs.com/package/stream-chain
+        const etl = new chain([
+            (stream) => { return p.parseRaw(stream).data },
+            (data) => { return p.applyHeaders(data, colHeaders) },
+            (data) => { return p.applyLookups(data, allLookups) },
+            (data) => { return p.cleanObject(data) },
+            (data) => { return p.adobeToMp(data) },
+            new Batch({ batchSize: 1000 }),
+            (batch) => {
+                return batch.filter((e) => {
+                    if (e.properties.distinct_id.includes('undefined')) {
+                        return false;
+                    } else if (Number(e.properties.time)) {
+                        return false;
+                    } else {
+                        return true
+                    }
+
+
+                })
+            },
+            async (batch) => {
+                return await mpImport(mpCreds, batch, mpOptions)
+            }
+        ])
+
+        etl.on('error', (error) => {
+            console.log(error)
+            reject(error)
+        });
+
+        etl.on('data', (res, f, o) => {
+            responses.push(res.responses)
+        })
+
+        etl.on('end', (res) => {
+            u.time(`task time`, `stop`)
+            //remove the file
+            u.removeFile(rawDataPath)
+            resolve(responses)
+        });
+
+        stream.pipe(split()).pipe(etl);
+    })
+
+}
 
 module.exports = main;

@@ -7,39 +7,13 @@ const { clone } = require('./utils.js')
 
 
 exports.parseRaw = function (rawStream) {
-    return parseTSV.parse(rawStream);
-
-    // return new Promise((resolve, reject) => {
-    //     let rawStream = createReadStream(rawPath, 'utf-8');
-    //     //let parseRaw = [];
-    //     let parseStream = parseTSV.parse(rawStream, {
-    //         step: function (results, parser) {
-    //             //chunk(results, parser);
-    // 			return zipObject(headers, results)
-    //         },
-    //         complete: function (results, file) {
-    //             // resolve(finish(results, file))
-    // 			resolve(results)
-    //         }
-    //     });
-
-    //     function chunk(results, parser) {
-    //         parseRaw.push(results.data)
-    //     }
-
-
-    //     function finish() {
-    //         let labeled = parseRaw.map((row) => {
-    //             return zipObject(headers, row)
-    //         })
-    //         return labeled;
-    //     }
-
-    // })
+    let parsed =  parseTSV.parse(rawStream, { delimiter: '\t', newline: '\n'});
+	return parsed;  
 }
 
 exports.applyHeaders = function (stream, headers) {
-    return zipObject(headers, stream)
+    let dataWithHeaders = zipObject(headers, stream);
+    return dataWithHeaders
 }
 
 exports.applyLookups = function (stream, lookups = {}) {
@@ -72,6 +46,9 @@ exports.applyLookups = function (stream, lookups = {}) {
         if (key === `post_event_list` && event[key]) {
             const allEventsInSession = event[key].split(',');
             const eventNameLookup = allEventsInSession.map((evId) => {
+				if (evId.includes('=')) {
+					evId = evId.split("=")[0]
+				}
                 const resolvedEvent = lookups.event_list.filter(pair => pair[0] === evId).flat()[1]
                 return resolvedEvent
             })
@@ -119,16 +96,16 @@ exports.adobeToMp = function (adobe = {}) {
     let mp = {
         event: eventName,
         properties: {
-            time: Number(adobe.hit_time_gmt) || Number(adobe.cust_hit_time_gmt) || Date.now(),
+            time: Number(adobe.hit_time_gmt) || Number(adobe.cust_hit_time_gmt) || Number(adobe.last_hit_time_gmt),
             distinct_id: `${adobe.post_visid_high}${adobe.post_visid_low}`,
             ...adobe
         }
     }
     // $insert_id
     // mp = addInsert(mp)
-	// if (isNaN(mp.properties.time)) {
-	// 	debugger;
-	// }
+    // if (isNaN(mp.properties.time)) {
+    // 	debugger;
+    // }
     return mp
 
 }
