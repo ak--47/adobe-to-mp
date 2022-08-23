@@ -2,9 +2,11 @@ const u = require('./utils.js');
 const p = require('./pipeline.js')
 const path = require('path');
 const fs = require('fs').promises
+const { createReadStream } = require('fs')
 const mpImport = require('mixpanel-import');
 const os = require('os')
-const { chain } = require('stream-chain');
+const chain = require('stream-chain');
+const Batch = require('stream-json/utils/Batch');
 
 
 
@@ -18,13 +20,13 @@ async function main(folder, z_Guides = {
     if (process.env.FAST) {
         console.log(`fast mode enabled!`)
         const totalRAM = os.totalmem();
-        const totalRamMB = Math.floor(totalRAM/(1024 * 1024));
+        const totalRamMB = Math.floor(totalRAM / (1024 * 1024));
         const useMostOfIt = Math.floor(totalRamMB * .90)
-		if (!process.env['NODE_OPTIONS']?.includes('--max-old-space-size')) {
-			console.log(`setting memory to ${totalRamMB} MB`)
-			process.env['NODE_OPTIONS'] += ` --max-old-space-size=${useMostOfIt}`
-		}
-        
+        if (!process.env['NODE_OPTIONS']?.includes('--max-old-space-size')) {
+            console.log(`setting memory to ${totalRamMB} MB`)
+            process.env['NODE_OPTIONS'] += ` --max-old-space-size=${useMostOfIt}`
+        }
+
     }
 
     u.time('total time')
@@ -39,7 +41,7 @@ async function main(folder, z_Guides = {
     console.log(`found ${jobs.length} jobs to do\n`)
     let result = []
 
-    for (const job of jobs) {
+    loopJobs: for (const job of jobs) {
         u.time('job time')
         const tasks = organizedFiles[job].raw;
         const lookupComp = organizedFiles[job].lookup
@@ -49,9 +51,7 @@ async function main(folder, z_Guides = {
         // EXTRACT lookup
         const lookup = await u.extractFile(lookupComp, `lookup`)
 
-        for (const task of tasks) {
-
-
+        loopTasks: for (const task of tasks) {
 
             console.log(`doing task ${currentTask} of ${totalTasks} for job ${job}`)
             u.time(`task time`)
@@ -78,50 +78,58 @@ async function main(folder, z_Guides = {
             }
             u.time('parse lookups', 'stop')
 
-
-            // each 'task' is a chained pipeline using the extracted data
-            // https://www.npmjs.com/package/stream-chain
-			
-            u.time('parse raw')
-            const rawParsedSourceData = await p.parseRaw(rawDataPath, colHeaders);
-            u.time('parse raw', 'stop')
-
-            // APPLY ADOBE LOOKUPS
-            u.time('apply lookups to raw')
-            const dataWithLookups = p.applyLookups(rawParsedSourceData, allLookups);
-            const cleanedSourceData = p.noNulls(dataWithLookups);
-            u.time('apply lookups to raw', 'stop')
-            
-			//TRANSFORM AND SEND TO MP
-            u.time('transform to mp')
-            const mixpanelFormat = p.adobeToMp(cleanedSourceData)
-            u.time('transform to mp', 'stop')
-
-            const mpOptions = {
+			 const mpOptions = {
                 recordType: `event`, //event, user, OR group
                 streamSize: 27, // highWaterMark for streaming chunks (2^27 ~= 134MB)
                 region: `US`, //US or EU
                 recordsPerBatch: 1000, //max # of records in each batch
                 bytesPerBatch: 2 * 1024 * 1024, //max # of bytes in each batch
-                strict: false, //use strict mode?
+                strict: true, //use strict mode?
                 logs: false, //print to stdout?
+				streamFormat: 'json',
                 //a function reference to be called on every record
                 //useful if you need to transform the data
                 transformFunc: function noop(a) { return a }
             }
-            u.time('flush')
-            const importedData = await mpImport(mpCreds, mixpanelFormat, mpOptions);
-            result.push(importedData)
-            currentTask++
-            u.time('flush', 'stop')
-            u.time(`task time`, 'stop')
 
-            //remove the file...
-            u.removeFile(rawDataPath)
+			let responses = [];
+
+            // each 'task' is a chained pipeline using the extracted data
+            // https://www.npmjs.com/package/stream-chain
+            const etl = new chain([
+                (stream) => { return p.parseRaw(stream).data },
+                (data) => { return p.applyHeaders(data, colHeaders) },
+                (data) => { return p.applyLookups(data, allLookups) },
+                (data) => { return p.cleanObject(data) },
+                (data) => { return p.adobeToMp(data) },
+				new Batch({ batchSize: 1000 }),
+                async (batch) => { 
+					return await mpImport(mpCreds, batch, mpOptions)
+				}
+            ])
+
+            etl.on('error', (error) => {
+                console.log(error)
+            });
+
+			etl.on('data', (res, f, o)=>{
+				responses.push(res.responses)
+			})
+			
+			etl.on('end', (res) => {
+				u.time(`task time`, `stop`)
+				//remove the file
+				u.removeFile(rawDataPath)
+			});
+
+            let rawStream = createReadStream(rawDataPath, 'utf-8');
+            await rawStream.pipe(etl);
+
+           
         }
 
         //remove the lookup
-        u.removeFile(lookup)
+        // u.removeFile(lookup)
         u.time('job time', 'stop')
         console.log('\n')
     }
