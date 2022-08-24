@@ -95,7 +95,7 @@ async function main(folder, z_Guides = {
             }
 
 
-            let rawStream = createReadStream(rawDataPath, { encoding: 'utf-8'});
+            let rawStream = createReadStream(rawDataPath, { encoding: 'utf-8' });
             let pipeline = await orchestratePipeline(rawStream, rawDataPath, colHeaders, allLookups, mpOptions, mpCreds);
             currentTask += 1
             result.push(pipeline)
@@ -121,29 +121,19 @@ async function orchestratePipeline(stream, rawDataPath, colHeaders, allLookups, 
         // each 'task' is a chained pipeline using the extracted data
         // https://www.npmjs.com/package/stream-chain
         const etl = new chain([
-
-            (stream) => { return p.parseRaw(stream).data }, //parse
-			new Batch({ batchSize: 2000 }),
-            gen(
-				(data) => { return p.applyHeaders(data, colHeaders) }, //headers
-                (data) => { return p.cleanObject(data) }, //clean
-                (data) => { return p.applyLookups(data, allLookups) }, //lookups                
-                (data) => { return p.adobeToMp(data) }), //toMixpanel
-            new Batch({ batchSize: 2000 }), //batch
-            async (batch) => { return await mpImport(mpCreds, batch, mpOptions) } //flush
-        ])
-
-        const phases = ['parse', 'headers', 'lookups', 'clean', 'e:{ p: {}}', 'batch', 'flush'].reverse()
+            new Batch({ batchSize: 1000 }),
+            [(stream) => { return stream.map(row => p.parseRaw(row, colHeaders)) }, //parse			            
+            (data) => { return data.map(row => p.cleanObject(row)) }, //clean			
+            (data) => { return data.map(row => p.applyLookups(row, allLookups)) }, //lookups			                
+            (data) => { return data.map(row => p.adobeToMp(row)) }, //toMixpanel			           
+            async (batch) => { return await mpImport(mpCreds, batch, mpOptions) }], //flush
+			(res) => { return res} 
+        ])        
 
         etl.on('error', (error) => {
             console.log(error)
             reject(error)
-        });
-
-        // etl.on('pipe', (src)=>{
-        // 	let stage = phases.pop()
-        // 	u.time(`	${stage} time`, `stop`)
-        // })
+        });        
 
         etl.on('data', (res, f, o) => {
             responses.push(res.responses)

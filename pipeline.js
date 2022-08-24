@@ -6,9 +6,9 @@ const md5 = require('md5')
 const { clone } = require('./utils.js')
 
 
-exports.parseRaw = function (rawStream) {
-    let parsed =  parseTSV.parse(rawStream, { delimiter: '\t', newline: '\n', fastMode: true});
-	return parsed;  
+exports.parseRaw = function (row, headers) {
+    let parsed =  parseTSV.parse(row, { delimiter: '\t', newline: '\n', fastMode: true});	
+	return zipObject(headers, parsed.data[0]);  
 }
 
 exports.applyHeaders = function (stream, headers) {
