@@ -5,9 +5,11 @@ const fs = require('fs').promises
 const { createReadStream } = require('fs')
 const mpImport = require('mixpanel-import');
 const os = require('os')
+const split = require('split2')
+
 const chain = require('stream-chain');
 const Batch = require('stream-json/utils/Batch');
-const split = require('split2')
+const gen = require('stream-chain/utils/gen');
 
 
 async function main(folder, z_Guides = {
@@ -23,7 +25,7 @@ async function main(folder, z_Guides = {
         const totalRamMB = Math.floor(totalRAM / (1024 * 1024));
         const useMostOfIt = Math.floor(totalRamMB * .90)
         if (!process.env['NODE_OPTIONS']?.includes('--max-old-space-size')) {
-            console.log(`setting memory to ${totalRamMB} MB`)
+            console.log(`setting memory to ${Math.round(totalRamMB/1000 * 100) / 100} GB\n`)
             process.env['NODE_OPTIONS'] += ` --max-old-space-size=${useMostOfIt}`
         }
 
@@ -55,14 +57,14 @@ async function main(folder, z_Guides = {
 
             console.log(`doing task ${currentTask} of ${totalTasks} for job ${job}`)
             // u.time(`task time`)
-            u.time('extract')
+            u.time('	extract')
             const rawDataPath = await u.extractFile(task)
-            u.time('extract', 'stop')
+            u.time('	extract', 'stop')
 
 
 
             // PARSE LOOKUPS AND CLEAN
-            u.time('parse lookups')
+            u.time('	parse lookups')
             const standMetaFiles = await u.listFiles(lookup);
             const colHeaders = await u.getHeaders(standMetaFiles.column_headers);
             const standardLookups = await u.getLookups(standMetaFiles);
@@ -76,7 +78,7 @@ async function main(folder, z_Guides = {
                 custEvent: custEventLabels,
                 custProps: custPropLabels
             }
-            u.time('parse lookups', 'stop')
+            u.time('	parse lookups', 'stop')
 
             const mpOptions = {
                 recordType: `event`, //event, user, OR group
@@ -84,7 +86,7 @@ async function main(folder, z_Guides = {
                 region: `US`, //US or EU
                 recordsPerBatch: 1000, //max # of records in each batch
                 bytesPerBatch: 2 * 1024 * 1024, //max # of bytes in each batch
-                strict: false, //use strict mode?
+                strict: true, //use strict mode?
                 logs: false, //print to stdout?
                 streamFormat: 'json',
                 //a function reference to be called on every record
@@ -93,8 +95,10 @@ async function main(folder, z_Guides = {
             }
 
 
-            let rawStream = createReadStream(rawDataPath, { encoding: 'utf-8' });
+            let rawStream = createReadStream(rawDataPath, { encoding: 'utf-8'});
             let pipeline = await orchestratePipeline(rawStream, rawDataPath, colHeaders, allLookups, mpOptions, mpCreds);
+            currentTask += 1
+            result.push(pipeline)
 
         }
 
@@ -106,39 +110,47 @@ async function main(folder, z_Guides = {
 
     u.time('total time', 'stop')
     console.log('\n\n')
-    return result
+    return result.flat()
 }
 
 
 async function orchestratePipeline(stream, rawDataPath, colHeaders, allLookups, mpOptions, mpCreds) {
-    u.time(`task time`)
+    u.time(`	task time`)
     let responses = [];
     return new Promise((resolve, reject) => {
         // each 'task' is a chained pipeline using the extracted data
         // https://www.npmjs.com/package/stream-chain
         const etl = new chain([
-            (stream) => { return p.parseRaw(stream).data },
-            (data) => { return p.applyHeaders(data, colHeaders) },
-            (data) => { return p.applyLookups(data, allLookups) },
-            (data) => { return p.cleanObject(data) },
-            (data) => { return p.adobeToMp(data) },
-            new Batch({ batchSize: 1000 }),
-            async (batch) => {
-                return await mpImport(mpCreds, batch, mpOptions)
-            }
+
+            (stream) => { return p.parseRaw(stream).data }, //parse
+			new Batch({ batchSize: 2000 }),
+            gen(
+				(data) => { return p.applyHeaders(data, colHeaders) }, //headers
+                (data) => { return p.cleanObject(data) }, //clean
+                (data) => { return p.applyLookups(data, allLookups) }, //lookups                
+                (data) => { return p.adobeToMp(data) }), //toMixpanel
+            new Batch({ batchSize: 2000 }), //batch
+            async (batch) => { return await mpImport(mpCreds, batch, mpOptions) } //flush
         ])
+
+        const phases = ['parse', 'headers', 'lookups', 'clean', 'e:{ p: {}}', 'batch', 'flush'].reverse()
 
         etl.on('error', (error) => {
             console.log(error)
             reject(error)
         });
 
+        // etl.on('pipe', (src)=>{
+        // 	let stage = phases.pop()
+        // 	u.time(`	${stage} time`, `stop`)
+        // })
+
         etl.on('data', (res, f, o) => {
             responses.push(res.responses)
         })
 
         etl.on('end', (res) => {
-            u.time(`task time`, `stop`)
+            u.time(`	task time`, `stop`)
             //remove the file
             u.removeFile(rawDataPath)
             resolve(responses)

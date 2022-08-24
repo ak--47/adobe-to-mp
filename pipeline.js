@@ -7,7 +7,7 @@ const { clone } = require('./utils.js')
 
 
 exports.parseRaw = function (rawStream) {
-    let parsed =  parseTSV.parse(rawStream, { delimiter: '\t', newline: '\n'});
+    let parsed =  parseTSV.parse(rawStream, { delimiter: '\t', newline: '\n', fastMode: true});
 	return parsed;  
 }
 
@@ -101,25 +101,13 @@ exports.adobeToMp = function (adobe = {}) {
             ...adobe
         }
     }
-    // $insert_id
-    // mp = addInsert(mp)
-    // if (isNaN(mp.properties.time)) {
-    // 	debugger;
-    // }
+    //$insert_id
+    mp = addInsert(mp)    
     return mp
 
 }
 
-
-exports.noNulls = function (arr = []) {
-    let target = clone(arr)
-    for (let thing of target) {
-        removeNulls(thing)
-    }
-
-    return target
-}
-
+//where objects have falsy values, delete those keys
 exports.cleanObject = function (obj) {
     let target = JSON.parse(JSON.stringify(obj))
 
