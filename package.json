@@ -4,7 +4,7 @@
   "description": "ETL from adbobe omniture to mixpanel",
   "main": "index.js",
   "scripts": {
-    "dev": "FAST=true nodemon --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.js",
+    "dev": "FAST=true nodemon --max-old-space-size=16096 --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.js",
     "prune": "rm -rf ./tmp/*"
   },
   "repository": {
@@ -21,9 +21,11 @@
     "nodemon": "^2.0.19"
   },
   "dependencies": {
+    "ak-tools": "^1.0.19",
+    "dayjs": "^1.11.6",
     "lodash": "^4.17.21",
     "md5": "^2.3.0",
-    "mixpanel-import": "^1.0.9",
+    "mixpanel-import": "^1.0.13",
     "papaparse": "^5.3.2",
     "split2": "^4.1.0",
     "stream-chain": "^2.2.5",
