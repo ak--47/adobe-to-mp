@@ -4,13 +4,15 @@
   "description": "ETL from adbobe omniture to mixpanel",
   "main": "index.js",
   "scripts": {
-    "dev": "FAST=true nodemon --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.js",
+    "dev": "RUNTIME=dev nodemon --max-old-space-size=16096 --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.mjs",
+	"deploy": "gcloud functions deploy adobe-transform --gen2 --no-allow-unauthenticated  --env-vars-file .env.yaml --runtime nodejs16 --region us-central1 --trigger-http --memory 16GB --entry-point start --source . --timeout=3600 --max-instances=500 --min-instances=0",
     "prune": "rm -rf ./tmp/*"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ak--47/adobeToMixpanel.git"
   },
+  "type": "module",
   "author": "AK",
   "license": "ISC",
   "bugs": {
@@ -21,10 +23,17 @@
     "nodemon": "^2.0.19"
   },
   "dependencies": {
+    "@google-cloud/functions-framework": "^3.2.0",
+    "@google-cloud/logging-bunyan": "^4.2.2",
+    "@google-cloud/storage": "^6.11.0",
+    "ak-tools": "^1.0.42",
+    "bunyan": "^1.8.15",
+    "dayjs": "^1.11.6",
     "lodash": "^4.17.21",
     "md5": "^2.3.0",
-    "mixpanel-import": "^1.0.9",
-    "papaparse": "^5.3.2",
+    "mixpanel-import": "^2.3.21",
+    "node-gzip": "^1.1.2",
+    "papaparse": "^5.4.1",
     "split2": "^4.1.0",
     "stream-chain": "^2.2.5",
     "stream-json": "^1.7.4"
