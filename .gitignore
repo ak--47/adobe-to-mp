@@ -15,6 +15,7 @@ lerna-debug.log*
 .pnpm-debug.log*
 sample/*
 !sample/.gitkeep
+request-builder.js
 
 # GUIDES
 guides/*

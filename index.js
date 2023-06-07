@@ -9,7 +9,7 @@ const path = require('path');
 const os = require('os');
 const isLocal = process.env.RUNTIME === "dev";
 const TEMP_DIR = isLocal ? path.resolve("./tmp") : os.tmpdir();
-const highWaterMark = 500000000; //500MB
+const highWaterMark = 50000000; //50MB
 const mime = require('mime-types');
 
 const lookups = await getLookups(`./lookups-standard/`);
@@ -18,6 +18,7 @@ const enumerableLookups = Object.keys(lookups);
 const headers = await getHeaders(`./lookups-custom/columns.csv`);
 const metrics = await getHashMap(`./guides/metrics.csv`, "", 3, 1);
 const standardEventList = await getHashMap(`./lookups-custom/eventStandard.tsv`);
+// UNUSED
 // const customEventList = await getHashMap(`./lookups-custom/eventList.csv`);
 // const evars = await getHashMap(`./guides/evars.csv`, "variables/");
 // const props = await getHashMap(`./guides/props.csv`, "variables/");
@@ -34,7 +35,7 @@ const log = bunyan.createLogger({
 	name: 'adobe-transform',
 	streams: [
 		// Log to the console at 'info' and above
-		{ stream: process.stdout, level: 'info' },
+		{ stream: process.stdout, level: 'debug' },
 		// And log to Cloud Logging, logging at 'info' and above
 		loggingBunyan.stream('info'),
 	]
@@ -43,10 +44,11 @@ const log = bunyan.createLogger({
 
 functions.http('start', async (req, res) => {
 	try {
-		log.warn(req.body, "TRANSFORM START");
+		const sourceFile = getFileName(req.body.cloud_path);
+		log.warn({file: sourceFile, ...req.body}, "TRANSFORM START");
 		const { cloud_path, dest_path } = req.body;
-		const { human, delta } = main(cloud_path, dest_path);
-		log.warn({ elapsed: delta, ...req.body }, `TRANSFORM END: ${human}`);
+		const { human, delta } = await main(cloud_path, dest_path);
+		log.warn({ file: sourceFile, elapsed: delta, ...req.body }, `TRANSFORM END: ${human}`);
 		res.status(200).send({ status: "OK" });
 	} catch (e) {
 		log.error(e, "ERROR!");
@@ -54,31 +56,51 @@ functions.http('start', async (req, res) => {
 	}
 });
 
-async function main(cloud_path, dest_path) {
+async function main(cloud_path, dest_path) {	
 	const timer = u.timer('transform');
 	timer.start();
+	
+	//cloud storage setup
 	const storage = new Storage();
 	const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);
 	const filename = path.basename(cloud_path);
+	const f = { file: filename };
 	const downloadFile = path.join(TEMP_DIR, filename);
+	
+	log.debug(f, 'downloading file');
 	await storage.bucket(bucket).file(cloudURI).download({ destination: downloadFile, decompress: true });
 	const uncompressedFilename = filename.replace(".gz", "");
-	const tempFile = path.join(TEMP_DIR, uncompressedFilename);
+	const TEMP_FILE_PATH = path.join(TEMP_DIR, uncompressedFilename);
+	
+	log.debug(f, 'reading file');
 	const data = await fs.readFile(downloadFile);
+	
+	log.debug(f, 'decompressing file');
 	const gunzipped = await gz.ungzip(data);
-	await u.touch(tempFile, gunzipped);
+	
+	log.debug(f, 'writing decompressed file');
+	await u.touch(TEMP_FILE_PATH, gunzipped);
 	await u.rm(downloadFile);
 
-	//clean up cols in transform stream
-	const tsvStream = createReadStream(tempFile, { highWaterMark });
-	const parsedRaw = [];
-	const parseStream = Papa.parse(tsvStream, {
+	log.debug(f, 'transform decompressed file + write to disk');
+	const tsvStream = createReadStream(TEMP_FILE_PATH, { highWaterMark });
+	const TEMP_FILE_TRANSFORMED = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
+	const TEMP_FILE_TRANSFORMED_PATH = path.join(TEMP_DIR, TEMP_FILE_TRANSFORMED);
+	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, { highWaterMark });
+	writeStream.on('error', function (err) {
+		log.error(err, "WRITE ERROR!");
+	});
+
+	//big 'ol parser
+	Papa.parse(tsvStream, {
 		header: true,
+		fastMode: true,
 		skipEmptyLines: true,
 		transformHeader: (header, index) => headers[index]["Column name"],
 		transform: cleanAdobeRaw,
 		step: function (result) {
-			parsedRaw.push(result.data);
+			const mpEvent = adobeToMixpanel(result.data);
+			writeStream.write(JSON.stringify(mpEvent) + '\n');
 		},
 		complete: function (results, file) {
 			tsvStream.destroy();
@@ -88,45 +110,25 @@ async function main(cloud_path, dest_path) {
 	//wait for stream to finish
 	await new Promise((resolve, reject) => {
 		tsvStream.on('end', () => {
+			writeStream.end();
 			resolve();
 		}).on('error', err => {
-			reject(err);
-		});
-	});
-
-	//turn into mixpanel
-	const mixpanelData = parsedRaw.map(adobeToMixpanel);
-	//const mixpanelEvents = mixpanelData.map(a => JSON.stringify(a)).join("\n");
-
-	//write to disk
-	const TEMP_FILE_NAME = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
-	const TEMP_FILE_PATH = path.join(TEMP_DIR, TEMP_FILE_NAME);
-	const writeStream = createWriteStream(TEMP_FILE_PATH, { highWaterMark });
-	writeStream.on('error', function (err) {
-		debugger;
-	});
-	mixpanelData.forEach(function (ev) { writeStream.write(JSON.stringify(ev) + '\n'); });
-	writeStream.end();
-
-	//wait for write stream to finish
-	await new Promise((resolve, reject) => {
-		writeStream.on('finish', () => {
-			resolve();
-		}).on('error', err => {
+			writeStream.end();
 			reject(err);
 		});
 	});
 
 
-	//upload to cloud storage
+	log.debug(f, 'uploading to cloud storage');
 	const { file: upload_path } = u.parseGCSUri(dest_path);
-	const destination = path.join(upload_path, TEMP_FILE_NAME);
-	const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_PATH, { destination, gzip: false });
+	const destination = path.join(upload_path, TEMP_FILE_TRANSFORMED);
+	const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: false });
 	if (!isLocal) {
-		await u.rm(transformedFile);
-		await u.rm(tempFile);
+		await u.rm(TEMP_FILE_TRANSFORMED_PATH);
+		await u.rm(TEMP_FILE_PATH);
 	};
 	timer.stop(false);
+	log.debug(f, 'job done');
 	return timer.report(false);
 }
 
@@ -141,13 +143,15 @@ function adobeToMixpanel(row) {
 	const mixpanelEvent = {
 		"event": "hit",
 		"properties": {
-			"distinct_id": row.mcvisid,
-			"time": Number(row.cust_hit_time_gmt),
+			"distinct_id":  row.mcvisid, //or what else?
+			"time": Number(row.hit_time_gmt) || Number(row.cust_hit_time_gmt) || Number(row.last_hit_time_gmt), //Number(row.cust_hit_time_gmt),
 			...u.removeNulls(row)
 		}
 	};
 
-	const hash = md5(JSON.stringify(mixpanelEvent));
+	const { distinct_id, time} = mixpanelEvent.properties;
+
+	const hash = md5(`${distinct_id}-${time}`);
 	mixpanelEvent.properties.$insert_id = hash;
 	return mixpanelEvent;
 }
@@ -193,18 +197,12 @@ GETTERS
 ----
 */
 
-function getFileFromPath(filePath) {
-	this.arrayBuffer = (() => {
-		var buffer = readFileSync(filePath);
-		var arrayBuffer = buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-		return [arrayBuffer];
-	})();
 
-	this.name = path.basename(filePath);
-
-	this.type = mime.lookup(path.extname(filePath)) || undefined;
+function getFileName(cloud_path) {
+	const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);
+	const filename = path.basename(cloud_path);
+	return filename;
 }
-
 
 async function getLookups(standardLookupsFolder) {
 	const standardLookups = await u.ls(path.resolve(standardLookupsFolder));

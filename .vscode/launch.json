@@ -9,6 +9,12 @@
 			"request": "launch",
 			"name": "dev",
 			"command": "npm run prune && npm run dev"
+		},
+		{
+			"type": "node-terminal",
+			"request": "launch",
+			"name": "func",
+			"command": "npm run prune && npm run func"
 		}
 	]
 }
