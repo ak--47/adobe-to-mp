@@ -9,6 +9,8 @@ const path = require('path');
 const os = require('os');
 const isLocal = process.env.RUNTIME === "dev";
 const TEMP_DIR = isLocal ? path.resolve("./tmp") : os.tmpdir();
+const highWaterMark = 500000000; //500MB
+const mime = require('mime-types');
 
 const lookups = await getLookups(`./lookups-standard/`);
 const enumerableLookups = Object.keys(lookups);
@@ -24,6 +26,7 @@ const { Storage } = require('@google-cloud/storage');
 const functions = require('@google-cloud/functions-framework');
 const gz = require("node-gzip");
 const fs = require('fs/promises');
+const { createReadStream, createWriteStream } = require('fs');
 const bunyan = require('bunyan');
 const { LoggingBunyan } = require('@google-cloud/logging-bunyan');
 const loggingBunyan = new LoggingBunyan({ logName: 'adobe-transform' });
@@ -42,9 +45,9 @@ functions.http('start', async (req, res) => {
 	try {
 		log.warn(req.body, "TRANSFORM START");
 		const { cloud_path, dest_path } = req.body;
-		await job(cloud_path, dest_path);
-		log.warn(req.body, "TRANSFORM END");
-		res.status(200).send({status: "OK"});
+		const { human, delta } = main(cloud_path, dest_path);
+		log.warn({ elapsed: delta, ...req.body }, `TRANSFORM END: ${human}`);
+		res.status(200).send({ status: "OK" });
 	} catch (e) {
 		log.error(e, "ERROR!");
 		res.status(500).send(e);
@@ -52,6 +55,8 @@ functions.http('start', async (req, res) => {
 });
 
 async function main(cloud_path, dest_path) {
+	const timer = u.timer('transform');
+	timer.start();
 	const storage = new Storage();
 	const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);
 	const filename = path.basename(cloud_path);
@@ -63,33 +68,66 @@ async function main(cloud_path, dest_path) {
 	const gunzipped = await gz.ungzip(data);
 	await u.touch(tempFile, gunzipped);
 	await u.rm(downloadFile);
-	const rawFile = await u.load(tempFile);
 
-	//clean up cols
-	const parsedRaw = Papa.parse(rawFile, {
+	//clean up cols in transform stream
+	const tsvStream = createReadStream(tempFile, { highWaterMark });
+	const parsedRaw = [];
+	const parseStream = Papa.parse(tsvStream, {
 		header: true,
 		skipEmptyLines: true,
 		transformHeader: (header, index) => headers[index]["Column name"],
-		transform: cleanAdobeRaw
-	}).data;
+		transform: cleanAdobeRaw,
+		step: function (result) {
+			parsedRaw.push(result.data);
+		},
+		complete: function (results, file) {
+			tsvStream.destroy();
+		}
+	});
+
+	//wait for stream to finish
+	await new Promise((resolve, reject) => {
+		tsvStream.on('end', () => {
+			resolve();
+		}).on('error', err => {
+			reject(err);
+		});
+	});
 
 	//turn into mixpanel
 	const mixpanelData = parsedRaw.map(adobeToMixpanel);
-	const mixpanelEvents = mixpanelData.map(a => JSON.stringify(a)).join("\n");
+	//const mixpanelEvents = mixpanelData.map(a => JSON.stringify(a)).join("\n");
 
 	//write to disk
-	const TEMP_FILE = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
-	const transformedFile = await u.touch(path.join(TEMP_DIR, TEMP_FILE), mixpanelEvents);
+	const TEMP_FILE_NAME = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
+	const TEMP_FILE_PATH = path.join(TEMP_DIR, TEMP_FILE_NAME);
+	const writeStream = createWriteStream(TEMP_FILE_PATH, { highWaterMark });
+	writeStream.on('error', function (err) {
+		debugger;
+	});
+	mixpanelData.forEach(function (ev) { writeStream.write(JSON.stringify(ev) + '\n'); });
+	writeStream.end();
+
+	//wait for write stream to finish
+	await new Promise((resolve, reject) => {
+		writeStream.on('finish', () => {
+			resolve();
+		}).on('error', err => {
+			reject(err);
+		});
+	});
+
 
 	//upload to cloud storage
 	const { file: upload_path } = u.parseGCSUri(dest_path);
-	const destination = path.join(upload_path, TEMP_FILE);
-	const [uploaded] = await storage.bucket(bucket).upload(transformedFile, { destination, gzip: false });
+	const destination = path.join(upload_path, TEMP_FILE_NAME);
+	const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_PATH, { destination, gzip: false });
 	if (!isLocal) {
 		await u.rm(transformedFile);
 		await u.rm(tempFile);
 	};
-	return true;
+	timer.stop(false);
+	return timer.report(false);
 }
 
 /*
@@ -154,6 +192,19 @@ function cleanAdobeRaw(value, header) {
 GETTERS
 ----
 */
+
+function getFileFromPath(filePath) {
+	this.arrayBuffer = (() => {
+		var buffer = readFileSync(filePath);
+		var arrayBuffer = buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+		return [arrayBuffer];
+	})();
+
+	this.name = path.basename(filePath);
+
+	this.type = mime.lookup(path.extname(filePath)) || undefined;
+}
+
 
 async function getLookups(standardLookupsFolder) {
 	const standardLookups = await u.ls(path.resolve(standardLookupsFolder));
