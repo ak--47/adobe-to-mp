@@ -89,7 +89,7 @@ async function main(cloud_path, dest_path) {
 		await u.rm(transformedFile);
 		await u.rm(tempFile);
 	};
-	return uploaded;
+	return true;
 }
 
 /*
