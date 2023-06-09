@@ -32,6 +32,7 @@ const log = bunyan.createLogger({
 	]
 
 });
+const RUNTIME = process.env.RUNTIME || "dev";
 
 /*
 ----
