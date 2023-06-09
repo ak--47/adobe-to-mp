@@ -21,6 +21,7 @@ request-builder.js
 guides/*
 !guides/.gitkeep
 lookups-custom/*
+!lookups-custom/.gitkeep
 !lookups/.gitkeep
 lookups-standard/*
 !lookups-standard/.gitkeep
