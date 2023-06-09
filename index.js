@@ -1,28 +1,19 @@
+/*
+----
+DEPENDENCIES
+----
+*/
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-
 const Papa = require('papaparse');
 const md5 = require('md5');
 const u = require('ak-tools');
-
 const path = require('path');
 const os = require('os');
 const isLocal = process.env.RUNTIME === "dev";
 const TEMP_DIR = isLocal ? path.resolve("./tmp") : os.tmpdir();
 const highWaterMark = 50000000; //50MB
 const mime = require('mime-types');
-
-const lookups = await getLookups(`./lookups-standard/`);
-const enumerableLookups = Object.keys(lookups);
-
-const headers = await getHeaders(`./lookups-custom/columns.csv`);
-const metrics = await getHashMap(`./guides/metrics.csv`, "", 3, 1);
-const standardEventList = await getHashMap(`./lookups-custom/eventStandard.tsv`);
-// UNUSED
-// const customEventList = await getHashMap(`./lookups-custom/eventList.csv`);
-// const evars = await getHashMap(`./guides/evars.csv`, "variables/");
-// const props = await getHashMap(`./guides/props.csv`, "variables/");
-
 const { Storage } = require('@google-cloud/storage');
 const functions = require('@google-cloud/functions-framework');
 const gz = require("node-gzip");
@@ -42,10 +33,38 @@ const log = bunyan.createLogger({
 
 });
 
+/*
+----
+CUSTOMER SUPPLIED LOOKUP TABLES
+----
+*/
+
+// standard adobe prop values
+const lookups = await getLookups(`./lookups-standard/`);
+const enumerableLookups = Object.keys(lookups);
+
+// columns for adobe raw TSV file, supplied by customer
+const headers = await getHeaders(`./lookups-custom/columns.csv`);
+
+// metric lists to resolve event names (use hashmaps for lookups because they are faster)
+const metrics = await getHashMap(`./guides/metrics.csv`, "", 3, 1);
+const standardEventList = await getHashMap(`./lookups-custom/eventStandard.tsv`);
+// THESE LOOKUPS ARE UNUSED
+// const customEventList = await getHashMap(`./lookups-custom/eventList.csv`);
+// const evars = await getHashMap(`./guides/evars.csv`, "variables/");
+// const props = await getHashMap(`./guides/props.csv`, "variables/");
+
+
+/*
+----
+CLOUD ENTRY
+----
+*/
+
 functions.http('start', async (req, res) => {
 	try {
 		const sourceFile = getFileName(req.body.cloud_path);
-		log.warn({file: sourceFile, ...req.body}, "TRANSFORM START");
+		log.warn({ file: sourceFile, ...req.body }, "TRANSFORM START");
 		const { cloud_path, dest_path } = req.body;
 		const { human, delta } = await main(cloud_path, dest_path);
 		log.warn({ file: sourceFile, elapsed: delta, ...req.body }, `TRANSFORM END: ${human}`);
@@ -56,37 +75,43 @@ functions.http('start', async (req, res) => {
 	}
 });
 
-async function main(cloud_path, dest_path) {	
+/*
+----
+MAIN
+----
+*/
+
+async function main(cloud_path, dest_path) {
 	const timer = u.timer('transform');
 	timer.start();
-	
+
 	//cloud storage setup
 	const storage = new Storage();
 	const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);
 	const filename = path.basename(cloud_path);
 	const f = { file: filename };
 	const downloadFile = path.join(TEMP_DIR, filename);
-	
+
 	log.debug(f, 'downloading file');
 	await storage.bucket(bucket).file(cloudURI).download({ destination: downloadFile, decompress: true });
 	const uncompressedFilename = filename.replace(".gz", "");
 	const TEMP_FILE_PATH = path.join(TEMP_DIR, uncompressedFilename);
-	
+
 	log.debug(f, 'reading file');
 	const data = await fs.readFile(downloadFile);
-	
+
 	log.debug(f, 'decompressing file');
 	const gunzipped = await gz.ungzip(data);
-	
+
 	log.debug(f, 'writing decompressed file');
 	await u.touch(TEMP_FILE_PATH, gunzipped);
 	await u.rm(downloadFile);
 
 	log.debug(f, 'transform decompressed file + write to disk');
-	const tsvStream = createReadStream(TEMP_FILE_PATH, { highWaterMark });
+	const tsvStream = createReadStream(TEMP_FILE_PATH, {  });
 	const TEMP_FILE_TRANSFORMED = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
 	const TEMP_FILE_TRANSFORMED_PATH = path.join(TEMP_DIR, TEMP_FILE_TRANSFORMED);
-	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, { highWaterMark });
+	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, {  });
 	writeStream.on('error', function (err) {
 		log.error(err, "WRITE ERROR!");
 	});
@@ -143,13 +168,13 @@ function adobeToMixpanel(row) {
 	const mixpanelEvent = {
 		"event": "hit",
 		"properties": {
-			"distinct_id":  row.mcvisid, //or what else?
+			"distinct_id": row.mcvisid, //or what else?
 			"time": Number(row.hit_time_gmt) || Number(row.cust_hit_time_gmt) || Number(row.last_hit_time_gmt), //Number(row.cust_hit_time_gmt),
 			...u.removeNulls(row)
 		}
 	};
 
-	const { distinct_id, time} = mixpanelEvent.properties;
+	const { distinct_id, time } = mixpanelEvent.properties;
 
 	const hash = md5(`${distinct_id}-${time}`);
 	mixpanelEvent.properties.$insert_id = hash;
@@ -163,7 +188,18 @@ function cleanAdobeRaw(value, header) {
 	//standard adobe dimensions
 	if (enumerableLookups.includes(header?.toLowerCase())) {
 		value = lookups[header.toLowerCase()].get(value);
-		return value;
+	}
+
+	//nested json objects
+	if (isJSON(value)) {
+		try {
+			value = JSON.parse(value);
+		}
+
+		catch (e) {
+			//noop
+			//note: adobe truncates json objects to 1000 characters, so this is a common error and there's nothing we can do about it
+		}
 	}
 
 	//post_event_list is where we define events; a "hit" is multiple events
@@ -174,12 +210,14 @@ function cleanAdobeRaw(value, header) {
 			if (event.includes("=")) {
 				event = event.split("=")[0];
 			}
-			//resolving metrics
+
+			//resolving metrics from metrics.csv
 			if (metrics.get(event)) return metrics.get(event);
 
-			//resolve standard events
-			if (standardEventList.get(event)) return standardEventList.get(event);
+			//resolve standard events from eventStandard.csv, although this should almost never happen
+			else if (standardEventList.get(event)) return standardEventList.get(event);
 
+			//if we can't resolve the event name, return it's number
 			else {
 				return event;
 			}
@@ -193,10 +231,20 @@ function cleanAdobeRaw(value, header) {
 
 /*
 ----
-GETTERS
+HELPERS
 ----
 */
 
+
+function isJSON(string) {
+	if (typeof string !== 'string') return false;
+	if (string.startsWith('{') && string.endsWith('}')) {
+		return true;
+	}
+	else {
+		return false
+	}
+};
 
 function getFileName(cloud_path) {
 	const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);

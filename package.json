@@ -5,10 +5,10 @@
   "main": "index.js",
   "scripts": {
     "dev": "RUNTIME=dev nodemon --max-old-space-size=16096 --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.mjs | bunyan -o short",
-	"func": "RUNTIME=dev functions-framework --target=start --source . --signature-type=http | bunyan -o short",
-	"deploy": "gcloud functions deploy adobe-transform --gen2 --no-allow-unauthenticated  --env-vars-file .env.yaml --runtime nodejs16 --region us-central1 --trigger-http --memory 16GB --entry-point start --source . --timeout=3600 --max-instances=3355 --min-instances=0",
+    "func": "RUNTIME=dev functions-framework --target=start --source . --signature-type=http | bunyan -o short",
+    "deploy": "gcloud functions deploy adobe-transform --gen2 --no-allow-unauthenticated  --env-vars-file .env.yaml --runtime nodejs16 --region us-central1 --trigger-http --memory 16GB --entry-point start --source . --timeout=3600 --max-instances=3355 --min-instances=0",
     "prune": "rm -rf ./tmp/*",
-	"buildReq": "node request-builder.js | pbcopy"
+    "buildReq": "node request-builder.js | pbcopy"
   },
   "repository": {
     "type": "git",
@@ -30,14 +30,9 @@
     "@google-cloud/storage": "^6.11.0",
     "ak-tools": "^1.0.42",
     "bunyan": "^1.8.15",
-    "dayjs": "^1.11.6",
-    "lodash": "^4.17.21",
     "md5": "^2.3.0",
     "mixpanel-import": "^2.3.21",
     "node-gzip": "^1.1.2",
-    "papaparse": "^5.4.1",
-    "split2": "^4.1.0",
-    "stream-chain": "^2.2.5",
-    "stream-json": "^1.7.4"
+    "papaparse": "^5.4.1"
   }
 }
