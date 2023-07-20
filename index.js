@@ -109,10 +109,10 @@ async function main(cloud_path, dest_path) {
 	await u.rm(downloadFile);
 
 	log.debug(f, 'transform decompressed file + write to disk');
-	const tsvStream = createReadStream(TEMP_FILE_PATH, {  });
+	const tsvStream = createReadStream(TEMP_FILE_PATH, {});
 	const TEMP_FILE_TRANSFORMED = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
 	const TEMP_FILE_TRANSFORMED_PATH = path.join(TEMP_DIR, TEMP_FILE_TRANSFORMED);
-	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, {  });
+	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, {});
 	writeStream.on('error', function (err) {
 		log.error(err, "WRITE ERROR!");
 	});
@@ -169,16 +169,75 @@ function adobeToMixpanel(row) {
 	const mixpanelEvent = {
 		"event": "hit",
 		"properties": {
-			"distinct_id": row.mcvisid, //or what else?
+			"distinct_id": row.mcvisid,
 			"time": Number(row.hit_time_gmt) || Number(row.cust_hit_time_gmt) || Number(row.last_hit_time_gmt), //Number(row.cust_hit_time_gmt),
 			...u.removeNulls(row)
 		}
 	};
 
+	//use visid_high and visid_low if it's available
+	if ((row.visid_high !== "0" && row.visid_high) || (row.visid_low !== "0" && row.visid_low)) {
+		mixpanelEvent.properties.distinct_id = `${row.visid_high}${row.visid_low}`;
+	}
+
 	const { distinct_id, time } = mixpanelEvent.properties;
 
-	const hash = md5(`${distinct_id}-${time}`);
+	const hash = md5(`${distinct_id}-${time}-${row?.hitid_high || ""}-${row?.hitid_low || ""}`);
 	mixpanelEvent.properties.$insert_id = hash;
+
+	//this is only used for special hits where we need to "explode" the adobe data
+	const explodeMatches = ['orders', 'plp loads', 'cart views', 'checkouts'];
+	const mixpanelEvents = [mixpanelEvent];
+	if (row.post_event_list.some(x => explodeMatches.some(match => x?.toLowerCase()?.includes(match)))) {
+		if (row.post_product_list) {
+			const products = row.post_product_list.split(';');
+			products.shift(); //remove first element, which is always IGNORED
+
+			/**
+			 * 0 : IGNORE ... gets shifted() out
+			 * 1 : product id
+			 * 2 : quantity
+			 * 3 : total price
+			 * 4 : ??? IGNORE
+			 * 5 : long description [remove]
+			 * 6 : NEXT product id
+			 * 7 : NEXT quantity
+			 * 8 : NEXT total price
+			 * 9 : NEXT ???
+			 * 10 : NEXT long description [remove]
+			 * 11 : NEXT NEXT product id
+			 * 12 : NEXT NEXT quantity
+			 * 13 : NEXT NEXT total price
+			 * 14 : NEXT NEXT ???
+			 * 15 : NEXT NEXT long description [remove]
+			 */
+
+			const productChunks = [...chunks(products, 5)];
+			const explodedProps = productChunks.map(chunk => {
+				const values = {};
+				if (chunk[0]) values.product_id = chunk[0]; //this may not exist
+				if (chunk[1]) values.quantity = chunk[1]; // this exists only on orders
+				if (chunk[2]) values.total_price = chunk[2]; // this exists only on orders
+
+				//the event that matched
+				values.MATCHED_EVENT = row.post_event_list.filter(x => explodeMatches.some(match => x?.toLowerCase()?.includes(match)))[0];
+				return values;
+			});
+
+			for (const explodedProp of explodedProps) {
+				//only explode if we have a product id
+				if (explodedProp.product_id) {
+					mixpanelEvents.push({
+						"event": "product hit",
+						"properties": { ...mixpanelEvent.properties, ...explodedProp }
+					});
+				}
+			}
+
+			return mixpanelEvents;
+		}
+	}
+
 	return mixpanelEvent;
 }
 
@@ -198,8 +257,8 @@ function cleanAdobeRaw(value, header) {
 		}
 
 		catch (e) {
-			//noop
 			//note: adobe truncates json objects to 1000 characters, so this is a common error and there's nothing we can do about it
+			value = null;
 		}
 	}
 
@@ -239,11 +298,11 @@ HELPERS
 
 function isJSON(string) {
 	if (typeof string !== 'string') return false;
-	if (string.startsWith('{') && string.endsWith('}')) {
+	if (string.startsWith('{')) {
 		return true;
 	}
 	else {
-		return false
+		return false;
 	}
 };
 
@@ -280,6 +339,12 @@ async function getHeaders(headersFile) {
 	const rawFile = await u.load(headersFile);
 	const parsedFile = Papa.parse(rawFile, { header: true }).data;
 	return parsedFile;
+}
+
+function* chunks(arr, n) {
+	for (let i = 0; i < arr.length; i += n) {
+		yield arr.slice(i, i + n);
+	}
 }
 
 export default main;
