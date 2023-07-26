@@ -16,12 +16,15 @@ const highWaterMark = 50000000; //50MB
 const mime = require('mime-types');
 const { Storage } = require('@google-cloud/storage');
 const functions = require('@google-cloud/functions-framework');
-const gz = require("node-gzip");
-const fs = require('fs/promises');
+// const gz = require("node-gzip");
+// const fs = require('fs/promises');
 const { createReadStream, createWriteStream } = require('fs');
 const bunyan = require('bunyan');
 const { LoggingBunyan } = require('@google-cloud/logging-bunyan');
 const loggingBunyan = new LoggingBunyan({ logName: 'adobe-transform' });
+const zlib = require('zlib');
+const { pipeline } = require('stream/promises');
+const { Transform } = require('stream');
 const log = bunyan.createLogger({
 	name: 'adobe-transform',
 	streams: [
@@ -33,6 +36,7 @@ const log = bunyan.createLogger({
 
 });
 const RUNTIME = process.env.RUNTIME || "dev";
+const MB = 25
 
 /*
 ----
@@ -91,95 +95,96 @@ async function main(cloud_path, dest_path) {
 	const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);
 	const filename = path.basename(cloud_path);
 	const f = { file: filename };
-	const downloadFile = path.join(TEMP_DIR, filename);
-
-	log.debug(f, 'downloading file');
-	await storage.bucket(bucket).file(cloudURI).download({ destination: downloadFile, decompress: true });
-	const uncompressedFilename = filename.replace(".gz", "");
-	const TEMP_FILE_PATH = path.join(TEMP_DIR, uncompressedFilename);
-
-	log.debug(f, 'reading file');
-	const data = await fs.readFile(downloadFile);
-
-	log.debug(f, 'decompressing file');
-	const gunzipped = await gz.ungzip(data);
-
-	log.debug(f, 'writing decompressed file');
-	await u.touch(TEMP_FILE_PATH, gunzipped);
-	await u.rm(downloadFile);
-
-	log.debug(f, 'transform decompressed file + write to disk');
-	const tsvStream = createReadStream(TEMP_FILE_PATH, {});
 	const TEMP_FILE_TRANSFORMED = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
 	const TEMP_FILE_TRANSFORMED_PATH = path.join(TEMP_DIR, TEMP_FILE_TRANSFORMED);
-	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, {});
+
+	log.debug(f, 'streaming + transforming');
+	const remoteFile = storage.bucket(bucket).file(cloudURI);
+
+	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH);
 	writeStream.on('error', function (err) {
 		log.error(err, "WRITE ERROR!");
 	});
 
-	// //big 'ol parser
-	// Papa.parse(tsvStream, {
-	// 	header: true,
-	// 	fastMode: true,
-	// 	skipEmptyLines: true,
-	// 	transformHeader: (header, index) => headers[index]["Column name"],
-	// 	transform: cleanAdobeRaw,
-	// 	step: function (result) {
-	// 		const mpEvent = adobeToMixpanel(result.data);
-	// 		writeStream.write(JSON.stringify(mpEvent) + '\n');
-	// 	},
-	// 	complete: function (results, file) {
-	// 		tsvStream.destroy();
-	// 	}
-	// });
+	const parseStream = Papa.parse(Papa.NODE_STREAM_INPUT, {
+		header: true,
+		fastMode: true,
+		skipEmptyLines: true,
+		transformHeader: (header, index) => headers[index]["Column name"],
+		transform: cleanAdobeRaw,		
+	});
 
-	// //wait for stream to finish
-	// await new Promise((resolve, reject) => {
-	// 	tsvStream.on('end', () => {
-	// 		writeStream.end();
-	// 		resolve();
-	// 	}).on('error', err => {
-	// 		writeStream.end();
-	// 		reject(err);
-	// 	});
-	// });
+	const transformStream = new Transform({
+		objectMode: true, // this allows passing objects
+		transform(chunk, encoding, callback) {
+		  const mpEvent = adobeToMixpanel(chunk);
+		  this.push(JSON.stringify(mpEvent) + '\n');
+		  callback();
+		}
+	  });
 
-	//big 'ol parser
+
+	//pipeline
 	await new Promise((resolve, reject) => {
-		Papa.parse(tsvStream, {
-			header: true,
-			fastMode: true,
-			skipEmptyLines: true,
-			transformHeader: (header, index) => headers[index]["Column name"],
-			transform: cleanAdobeRaw,
-			step: function (result) {
-				const mpEvent = adobeToMixpanel(result.data);
-				writeStream.write(JSON.stringify(mpEvent) + '\n');
-			},
-			complete: function (results, file) {
-				tsvStream.destroy();
+		remoteFile.createReadStream({ highWaterMark: 1024 * 1024 * MB })
+			.pipe(zlib.createGunzip({ chunkSize: 1024 * 1024 * MB }))
+			.pipe(parseStream)
+			.pipe(transformStream)
+			.pipe(writeStream)			
+			.on('finish', async () => {
 				writeStream.end();
 				resolve();
-			},
-			error: function (err) {
-				tsvStream.destroy();
+
+			})
+			.on('error', (err) => {
 				writeStream.end();
 				reject(err);
-			}
-		});
+			});
+
 	});
 
 
-
-	log.debug(f, 'uploading to cloud storage');
+	log.debug(f, 'uploading');
 	const { file: upload_path } = u.parseGCSUri(dest_path);
 	const destination = path.join(upload_path, TEMP_FILE_TRANSFORMED);
 	const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: true });
 	await u.rm(TEMP_FILE_TRANSFORMED_PATH);
-	await u.rm(TEMP_FILE_PATH);
 	timer.stop(false);
 	log.debug(f, 'job done');
 	return timer.report(false);
+
+
+
+
+
+	// //big 'ol parser
+	// await new Promise((resolve, reject) => {
+	// 	Papa.parse(tsvStream, {
+	// 		header: true,
+	// 		fastMode: true,
+	// 		skipEmptyLines: true,
+	// 		transformHeader: (header, index) => headers[index]["Column name"],
+	// 		transform: cleanAdobeRaw,
+	// 		step: function (result) {
+	// 			const mpEvent = adobeToMixpanel(result.data);
+	// 			writeStream.write(JSON.stringify(mpEvent) + '\n');
+	// 		},
+	// 		complete: function (results, file) {
+	// 			tsvStream.destroy();
+	// 			writeStream.end();
+	// 			resolve();
+	// 		},
+	// 		error: function (err) {
+	// 			tsvStream.destroy();
+	// 			writeStream.end();
+	// 			reject(err);
+	// 		}
+	// 	});
+	// });
+
+
+
+
 }
 
 /*
@@ -271,9 +276,10 @@ function cleanAdobeRaw(value, header) {
 	//set "" to null
 	if (value === "") return null;
 	//set "--" to null
-	if (value === "--") return null;
-	//set "NA" to null	
-	if (value?.toLowerCase() === "n/a") return null;
+	if (value === "--" || value === '-') return null;
+	//set ":" to null
+	if (value === ":") return null;
+
 	//standard adobe dimensions
 	if (enumerableLookups.includes(header?.toLowerCase())) {
 		value = lookups[header.toLowerCase()].get(value);
