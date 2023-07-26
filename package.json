@@ -4,7 +4,7 @@
   "description": "ETL from adbobe omniture to mixpanel",
   "main": "index.js",
   "scripts": {
-    "dev": "RUNTIME=dev nodemon --max-old-space-size=16096 --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.mjs | bunyan -o short",
+    "dev": "npm run prune && RUNTIME=dev nodemon --max-old-space-size=16096 --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.mjs | bunyan -o short",
     "func": "RUNTIME=dev functions-framework --target=start --source . --signature-type=http | bunyan -o short",
     "deploy": "gcloud functions deploy adobe-transform --gen2 --no-allow-unauthenticated  --env-vars-file .env.yaml --runtime nodejs16 --region us-central1 --trigger-http --memory 16GB --entry-point start --source . --timeout=3600 --max-instances=3355 --min-instances=0",
     "prune": "rm -rf ./tmp/*",

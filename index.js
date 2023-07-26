@@ -71,7 +71,7 @@ functions.http('start', async (req, res) => {
 		log.warn({ file: sourceFile, elapsed: delta, ...req.body }, `TRANSFORM END: ${human}`);
 		res.status(200).send({ status: "OK" });
 	} catch (e) {
-		log.error(e, "ERROR!");
+		log.error({ error: e, body: req.body }, "ERROR!");
 		res.status(500).send(e);
 	}
 });
@@ -117,42 +117,66 @@ async function main(cloud_path, dest_path) {
 		log.error(err, "WRITE ERROR!");
 	});
 
-	//big 'ol parser
-	Papa.parse(tsvStream, {
-		header: true,
-		fastMode: true,
-		skipEmptyLines: true,
-		transformHeader: (header, index) => headers[index]["Column name"],
-		transform: cleanAdobeRaw,
-		step: function (result) {
-			const mpEvent = adobeToMixpanel(result.data);
-			writeStream.write(JSON.stringify(mpEvent) + '\n');
-		},
-		complete: function (results, file) {
-			tsvStream.destroy();
-		}
-	});
+	// //big 'ol parser
+	// Papa.parse(tsvStream, {
+	// 	header: true,
+	// 	fastMode: true,
+	// 	skipEmptyLines: true,
+	// 	transformHeader: (header, index) => headers[index]["Column name"],
+	// 	transform: cleanAdobeRaw,
+	// 	step: function (result) {
+	// 		const mpEvent = adobeToMixpanel(result.data);
+	// 		writeStream.write(JSON.stringify(mpEvent) + '\n');
+	// 	},
+	// 	complete: function (results, file) {
+	// 		tsvStream.destroy();
+	// 	}
+	// });
 
-	//wait for stream to finish
+	// //wait for stream to finish
+	// await new Promise((resolve, reject) => {
+	// 	tsvStream.on('end', () => {
+	// 		writeStream.end();
+	// 		resolve();
+	// 	}).on('error', err => {
+	// 		writeStream.end();
+	// 		reject(err);
+	// 	});
+	// });
+
+	//big 'ol parser
 	await new Promise((resolve, reject) => {
-		tsvStream.on('end', () => {
-			writeStream.end();
-			resolve();
-		}).on('error', err => {
-			writeStream.end();
-			reject(err);
+		Papa.parse(tsvStream, {
+			header: true,
+			fastMode: true,
+			skipEmptyLines: true,
+			transformHeader: (header, index) => headers[index]["Column name"],
+			transform: cleanAdobeRaw,
+			step: function (result) {
+				const mpEvent = adobeToMixpanel(result.data);
+				writeStream.write(JSON.stringify(mpEvent) + '\n');
+			},
+			complete: function (results, file) {
+				tsvStream.destroy();
+				writeStream.end();
+				resolve();
+			},
+			error: function (err) {
+				tsvStream.destroy();
+				writeStream.end();
+				reject(err);
+			}
 		});
 	});
+
 
 
 	log.debug(f, 'uploading to cloud storage');
 	const { file: upload_path } = u.parseGCSUri(dest_path);
 	const destination = path.join(upload_path, TEMP_FILE_TRANSFORMED);
-	const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: false });
-	if (!isLocal) {
-		await u.rm(TEMP_FILE_TRANSFORMED_PATH);
-		await u.rm(TEMP_FILE_PATH);
-	};
+	const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: true });
+	await u.rm(TEMP_FILE_TRANSFORMED_PATH);
+	await u.rm(TEMP_FILE_PATH);
 	timer.stop(false);
 	log.debug(f, 'job done');
 	return timer.report(false);
@@ -186,9 +210,9 @@ function adobeToMixpanel(row) {
 	mixpanelEvent.properties.$insert_id = hash;
 
 	//this is only used for special hits where we need to "explode" the adobe data
-	const explodeMatches = ['orders', 'plp loads', 'cart views', 'checkouts'];
+	const explodeMatches = ['orders', 'plp loads', 'checkouts'];
 	const mixpanelEvents = [mixpanelEvent];
-	if (row.post_event_list.some(x => explodeMatches.some(match => x?.toLowerCase()?.includes(match)))) {
+	if (row.post_event_list?.some(x => explodeMatches?.some(match => x?.toLowerCase()?.includes(match)))) {
 		if (row.post_product_list) {
 			const products = row.post_product_list.split(';');
 			products.shift(); //remove first element, which is always IGNORED
@@ -227,9 +251,10 @@ function adobeToMixpanel(row) {
 			for (const explodedProp of explodedProps) {
 				//only explode if we have a product id
 				if (explodedProp.product_id) {
+					const insert_id = md5(JSON.stringify(explodedProp));
 					mixpanelEvents.push({
 						"event": "product hit",
-						"properties": { ...mixpanelEvent.properties, ...explodedProp }
+						"properties": { ...mixpanelEvent.properties, ...explodedProp, $insert_id: insert_id }
 					});
 				}
 			}
@@ -245,6 +270,10 @@ function adobeToMixpanel(row) {
 function cleanAdobeRaw(value, header) {
 	//set "" to null
 	if (value === "") return null;
+	//set "--" to null
+	if (value === "--") return null;
+	//set "NA" to null	
+	if (value?.toLowerCase() === "n/a") return null;
 	//standard adobe dimensions
 	if (enumerableLookups.includes(header?.toLowerCase())) {
 		value = lookups[header.toLowerCase()].get(value);
