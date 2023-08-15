@@ -36,7 +36,7 @@ const log = bunyan.createLogger({
 
 });
 const RUNTIME = process.env.RUNTIME || "dev";
-const MB = 25
+const MB = 25;
 
 /*
 ----
@@ -111,17 +111,25 @@ async function main(cloud_path, dest_path) {
 		fastMode: true,
 		skipEmptyLines: true,
 		transformHeader: (header, index) => headers[index]["Column name"],
-		transform: cleanAdobeRaw,		
+		transform: cleanAdobeRaw,
 	});
 
 	const transformStream = new Transform({
 		objectMode: true, // this allows passing objects
 		transform(chunk, encoding, callback) {
-		  const mpEvent = adobeToMixpanel(chunk);
-		  this.push(JSON.stringify(mpEvent) + '\n');
-		  callback();
+			const mpEvent = adobeToMixpanel(chunk);
+			if (Array.isArray(mpEvent)) {
+				for (const event of mpEvent) {
+					this.push(JSON.stringify(event) + '\n');
+				}
+			}
+
+			else {
+				this.push(JSON.stringify(mpEvent) + '\n');
+			}
+			callback();
 		}
-	  });
+	});
 
 
 	//pipeline
@@ -130,7 +138,7 @@ async function main(cloud_path, dest_path) {
 			.pipe(zlib.createGunzip({ chunkSize: 1024 * 1024 * MB }))
 			.pipe(parseStream)
 			.pipe(transformStream)
-			.pipe(writeStream)			
+			.pipe(writeStream)
 			.on('finish', async () => {
 				writeStream.end();
 				resolve();
@@ -154,33 +162,6 @@ async function main(cloud_path, dest_path) {
 	return timer.report(false);
 
 
-
-
-
-	// //big 'ol parser
-	// await new Promise((resolve, reject) => {
-	// 	Papa.parse(tsvStream, {
-	// 		header: true,
-	// 		fastMode: true,
-	// 		skipEmptyLines: true,
-	// 		transformHeader: (header, index) => headers[index]["Column name"],
-	// 		transform: cleanAdobeRaw,
-	// 		step: function (result) {
-	// 			const mpEvent = adobeToMixpanel(result.data);
-	// 			writeStream.write(JSON.stringify(mpEvent) + '\n');
-	// 		},
-	// 		complete: function (results, file) {
-	// 			tsvStream.destroy();
-	// 			writeStream.end();
-	// 			resolve();
-	// 		},
-	// 		error: function (err) {
-	// 			tsvStream.destroy();
-	// 			writeStream.end();
-	// 			reject(err);
-	// 		}
-	// 	});
-	// });
 
 
 
@@ -209,9 +190,7 @@ function adobeToMixpanel(row) {
 		mixpanelEvent.properties.distinct_id = `${row.visid_high}${row.visid_low}`;
 	}
 
-	const { distinct_id, time } = mixpanelEvent.properties;
-
-	const hash = md5(`${distinct_id}-${time}-${row?.hitid_high || ""}-${row?.hitid_low || ""}`);
+	const hash = md5(`${row?.hitid_high || ""}-${row?.hitid_low || ""}`);
 	mixpanelEvent.properties.$insert_id = hash;
 
 	//this is only used for special hits where we need to "explode" the adobe data
@@ -221,7 +200,9 @@ function adobeToMixpanel(row) {
 		if (row.post_product_list) {
 			const products = row.post_product_list.split(';');
 			products.shift(); //remove first element, which is always IGNORED
-
+			if (products.length % 5 !== 0) { 
+				debugger;
+			}
 			/**
 			 * 0 : IGNORE ... gets shifted() out
 			 * 1 : product id
@@ -250,6 +231,11 @@ function adobeToMixpanel(row) {
 
 				//the event that matched
 				values.MATCHED_EVENT = row.post_event_list.filter(x => explodeMatches.some(match => x?.toLowerCase()?.includes(match)))[0];
+
+				if (Number.isNaN(Number(values.quantity)) && values.MATCHED_EVENT === "orders") {
+					debugger;
+				}
+
 				return values;
 			});
 
