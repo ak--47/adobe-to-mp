@@ -10,21 +10,18 @@ const md5 = require('md5');
 const u = require('ak-tools');
 const path = require('path');
 const os = require('os');
-const isLocal = process.env.RUNTIME === "dev";
-const TEMP_DIR = isLocal ? path.resolve("./tmp") : os.tmpdir();
-const highWaterMark = 50000000; //50MB
-const mime = require('mime-types');
 const { Storage } = require('@google-cloud/storage');
 const functions = require('@google-cloud/functions-framework');
-// const gz = require("node-gzip");
-// const fs = require('fs/promises');
-const { createReadStream, createWriteStream } = require('fs');
+const { createWriteStream } = require('fs');
 const bunyan = require('bunyan');
 const { LoggingBunyan } = require('@google-cloud/logging-bunyan');
-const loggingBunyan = new LoggingBunyan({ logName: 'adobe-transform' });
+const loggingBunyan = new LoggingBunyan({ logName: 'adobe-transform', redirectToStdout: true });
 const zlib = require('zlib');
-const { pipeline } = require('stream/promises');
 const { Transform } = require('stream');
+const isLocal = process.env.RUNTIME === "dev";
+const RUNTIME = process.env.RUNTIME || "unknown";
+const TEMP_DIR = isLocal ? path.resolve("./tmp") : os.tmpdir();
+const MB = 25;
 const log = bunyan.createLogger({
 	name: 'adobe-transform',
 	streams: [
@@ -35,8 +32,6 @@ const log = bunyan.createLogger({
 	]
 
 });
-const RUNTIME = process.env.RUNTIME || "dev";
-const MB = 25;
 
 /*
 ----
@@ -113,6 +108,9 @@ async function main(cloud_path, dest_path) {
 		transformHeader: (header, index) => headers[index]["Column name"],
 		transform: cleanAdobeRaw,
 	});
+	parseStream.on('error', function (err) {
+		log.error(err, "PARSE ERROR!");
+	});
 
 	const transformStream = new Transform({
 		objectMode: true, // this allows passing objects
@@ -129,6 +127,10 @@ async function main(cloud_path, dest_path) {
 			}
 			callback();
 		}
+	});
+
+	transformStream.on('error', function (err) {
+		log.error(err, "TRANSFORM ERROR!");
 	});
 
 
@@ -156,10 +158,12 @@ async function main(cloud_path, dest_path) {
 	const { file: upload_path } = u.parseGCSUri(dest_path);
 	const destination = path.join(upload_path, TEMP_FILE_TRANSFORMED);
 	const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: true });
-	await u.rm(TEMP_FILE_TRANSFORMED_PATH);
+	if (!isLocal) {
+		await u.rm(TEMP_FILE_TRANSFORMED_PATH);
+	}
 	timer.stop(false);
 	log.debug(f, 'job done');
-	return timer.report(false);
+	return { ...timer.report(false), source: cloud_path, destination: 'gs://'.concat(bucket).concat('/').concat(uploaded.name) };
 
 
 
@@ -190,67 +194,62 @@ function adobeToMixpanel(row) {
 		mixpanelEvent.properties.distinct_id = `${row.visid_high}${row.visid_low}`;
 	}
 
+	// no insert_id
 	const hash = md5(`${row?.hitid_high || ""}-${row?.hitid_low || ""}`);
 	mixpanelEvent.properties.$insert_id = hash;
 
 	//this is only used for special hits where we need to "explode" the adobe data
-	const explodeMatches = ['orders', 'plp loads', 'checkouts'];
-	const mixpanelEvents = [mixpanelEvent];
-	if (row.post_event_list?.some(x => explodeMatches?.some(match => x?.toLowerCase()?.includes(match)))) {
+	const explodeMatches = ['orders']; //'plp loads', 'checkouts'
+	
+	if (row.post_event_list?.some(x => explodeMatches?.some(match => x?.toLowerCase() === match))) {
 		if (row.post_product_list) {
 			const products = row.post_product_list.split(';');
 			products.shift(); //remove first element, which is always IGNORED
-			if (products.length % 5 !== 0) { 
-				debugger;
-			}
-			/**
-			 * 0 : IGNORE ... gets shifted() out
-			 * 1 : product id
-			 * 2 : quantity
-			 * 3 : total price
-			 * 4 : ??? IGNORE
-			 * 5 : long description [remove]
-			 * 6 : NEXT product id
-			 * 7 : NEXT quantity
-			 * 8 : NEXT total price
-			 * 9 : NEXT ???
-			 * 10 : NEXT long description [remove]
-			 * 11 : NEXT NEXT product id
-			 * 12 : NEXT NEXT quantity
-			 * 13 : NEXT NEXT total price
-			 * 14 : NEXT NEXT ???
-			 * 15 : NEXT NEXT long description [remove]
+			
+			// if (products.length % 5 !== 0) { 
+			// 	debugger;
+			// }
+
+			//THE FORMULA TO EXTRACT THE PRODUCT DATA IS AS FOLLOWS:
+			/**			 
+			 * 0 : product id
+			 * 1 : quantity
+			 * 2 : total price
+			 * 3 : ??? IGNORE
+			 * 4 : long description [remove]
+			 * 5 : NEXT product id
+			 * 6 : NEXT quantity
+			 * 7 : NEXT total price
+			 * 8 : NEXT ???
+			 * 9 : NEXT long description [remove]
+			 * 10 : NEXT NEXT product id
+			 * 11 : NEXT NEXT quantity
+			 * 12 : NEXT NEXT total price
+			 * 13 : NEXT NEXT ???
+			 * 14 : NEXT NEXT long description [remove]
 			 */
 
 			const productChunks = [...chunks(products, 5)];
 			const explodedProps = productChunks.map(chunk => {
 				const values = {};
 				if (chunk[0]) values.product_id = chunk[0]; //this may not exist
-				if (chunk[1]) values.quantity = chunk[1]; // this exists only on orders
-				if (chunk[2]) values.total_price = chunk[2]; // this exists only on orders
-
-				//the event that matched
-				values.MATCHED_EVENT = row.post_event_list.filter(x => explodeMatches.some(match => x?.toLowerCase()?.includes(match)))[0];
-
-				if (Number.isNaN(Number(values.quantity)) && values.MATCHED_EVENT === "orders") {
-					debugger;
-				}
-
+				if (chunk[1]) values.quantity = +chunk[1]; // this exists only on orders
+				if (chunk[2]) values.total_price = +chunk[2]; // this exists only on orders				
 				return values;
 			});
-
+			//the event that matched
+			mixpanelEvent.properties.MATCHED_EVENT_PRODUCT_HITS = row.post_event_list.filter(x => explodeMatches.some(match => x?.toLowerCase()?.includes(match)))[0];
+			mixpanelEvent.properties.PRODUCTS_HITS = [];
 			for (const explodedProp of explodedProps) {
-				//only explode if we have a product id
+				//only valid values product_ids
 				if (explodedProp.product_id) {
-					const insert_id = md5(JSON.stringify(explodedProp));
-					mixpanelEvents.push({
-						"event": "product hit",
-						"properties": { ...mixpanelEvent.properties, ...explodedProp, $insert_id: insert_id }
-					});
+					//only valid values quantity and total_price
+					if (!isNaN(explodedProp.quantity) && !isNaN(explodedProp.total_price)) {
+						mixpanelEvent.properties.PRODUCTS_HITS.push(explodedProp);
+					}
+					
 				}
 			}
-
-			return mixpanelEvents;
 		}
 	}
 

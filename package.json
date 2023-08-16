@@ -28,10 +28,9 @@
     "@google-cloud/functions-framework": "^3.2.0",
     "@google-cloud/logging-bunyan": "^4.2.2",
     "@google-cloud/storage": "^6.11.0",
-    "ak-tools": "^1.0.42",
+    "ak-tools": "^1.0.44",
     "bunyan": "^1.8.15",
     "md5": "^2.3.0",
-    "mixpanel-import": "^2.3.21",
     "node-gzip": "^1.1.2",
     "papaparse": "^5.4.1"
   }
