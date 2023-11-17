@@ -17,6 +17,9 @@ sample/*
 !sample/.gitkeep
 request-builder.js
 
+lexicon-builder.mjs
+fromMixpanel/*
+
 # GUIDES
 guides/*
 !guides/.gitkeep

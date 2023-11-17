@@ -54,6 +54,13 @@ const standardEventList = await getHashMap(`./lookups-custom/eventStandard.tsv`)
 // const evars = await getHashMap(`./guides/evars.csv`, "variables/");
 // const props = await getHashMap(`./guides/props.csv`, "variables/");
 
+//whitelists
+// const whitelistEvars = await getWhitelist(`./guides/whitelist-evars.csv`);
+// const whitelistProps = await getWhitelist(`./guides/whitelist-props.csv`);
+// const whitelistMetrics = await getWhitelist(`./guides/whitelist-metrics.csv`);
+// const whitelist = [...whitelistEvars, ...whitelistProps, ...whitelistMetrics, "post_product_list", "post_event_list"];
+
+
 
 /*
 ----
@@ -64,10 +71,10 @@ CLOUD ENTRY
 functions.http('start', async (req, res) => {
 	try {
 		const sourceFile = getFileName(req.body.cloud_path);
-		log.warn({ file: sourceFile, ...req.body }, "TRANSFORM START");
+		log.info({ file: sourceFile, ...req.body }, "TRANSFORM START");
 		const { cloud_path, dest_path } = req.body;
 		const { human, delta } = await main(cloud_path, dest_path);
-		log.warn({ file: sourceFile, elapsed: delta, ...req.body }, `TRANSFORM END: ${human}`);
+		log.info({ file: sourceFile, elapsed: delta, ...req.body }, `TRANSFORM END: ${human}`);
 		res.status(200).send({ status: "OK" });
 	} catch (e) {
 		log.error({ error: e, body: req.body }, "ERROR!");
@@ -189,6 +196,18 @@ function adobeToMixpanel(row) {
 		}
 	};
 
+	if (isNaN(mixpanelEvent.properties.time)) debugger;
+	if (!Boolean(mixpanelEvent.properties.time)) debugger;
+	if (row['__parsed_extra']) debugger;
+
+
+	// for (const key in mixpanelEvent.properties) {
+	// 	if (!whitelist.includes(key)) {			
+	// 		delete mixpanelEvent.properties[key];
+	// 	}
+	// }
+
+
 	//use visid_high and visid_low if it's available
 	if ((row.visid_high !== "0" && row.visid_high) || (row.visid_low !== "0" && row.visid_low)) {
 		mixpanelEvent.properties.distinct_id = `${row.visid_high}${row.visid_low}`;
@@ -196,6 +215,7 @@ function adobeToMixpanel(row) {
 
 	// no insert_id
 	const hash = md5(`${row?.hitid_high || ""}-${row?.hitid_low || ""}`);
+
 	mixpanelEvent.properties.$insert_id = hash;
 
 	//this is only used for special hits where we need to "explode" the adobe data
@@ -305,6 +325,7 @@ function cleanAdobeRaw(value, header) {
 
 		return eventNames.filter(a => a);
 	}
+
 	return value;
 }
 
@@ -353,6 +374,13 @@ async function getHashMap(customLookupsFile, replacePhrase, keyCol = 0, ValueCol
 		return [i[keyCol], i[ValueCol]];
 	}));
 	return lookup;
+}
+
+async function getWhitelist(file, column = 0, separator = "/") {
+	const rawFile = await u.load(file);
+	const parsedFile = Papa.parse(rawFile, { header: false }).data;
+	const whitelist = parsedFile.map(i => i[column].split(separator)[1]).filter(a => a);
+	return whitelist;
 }
 
 async function getHeaders(headersFile) {

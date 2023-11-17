@@ -15,6 +15,16 @@
 			"request": "launch",
 			"name": "func",
 			"command": "npm run prune && npm run func"
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "go",
+			"runtimeExecutable": "nodemon",
+			"program": "${file}",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen"
 		}
 	]
 }
