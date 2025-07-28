@@ -135,8 +135,9 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		};
 
 	}
-
-	fs.unlinkSync(TEMP_FILE_TRANSFORMED_PATH);
+	if (fs.existsSync(TEMP_FILE_TRANSFORMED_PATH)) {
+		fs.unlinkSync(TEMP_FILE_TRANSFORMED_PATH);
+	}
 
 
 	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH);
@@ -253,7 +254,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 	});
 
-	
+
 	if (dest_path?.startsWith('gs://')) {
 		const { file: upload_path } = u.parseGCSUri(dest_path);
 		log.debug(`uploading to ${upload_path}`);
@@ -328,7 +329,7 @@ function adobeToMixpanel(row) {
 		// Events that should be properties, not separate events (typically metrics/measurements)
 		const propertyEvents = new Set([
 			'Page Load Time',
-			'Page Load Time Previous Page', 
+			'Page Load Time Previous Page',
 			'Time Spent on Page',
 			'Download Time',
 			'Connection Speed',
@@ -378,7 +379,7 @@ function adobeToMixpanel(row) {
 		if (Object.keys(eventProperties).length > 0 && events.length > 0) {
 			events[0] = { ...events[0], ...eventProperties };
 		}
-		
+
 		// If we have properties but no main event yet, create one for non-page view hits
 		if (Object.keys(eventProperties).length > 0 && events.length === 0) {
 			events.push({
