@@ -17,54 +17,53 @@ const { Storage } = require('@google-cloud/storage');
 const { createWriteStream } = require('fs');
 const zlib = require('zlib');
 const fs = require('fs');
-const { Transform } = require('stream');
+const { Transform, pipeline } = require('stream');
+const { promisify } = require('util');
+const pipelineAsync = promisify(pipeline);
 const NODE_ENV = process.env.NODE_ENV || "unknown";
 const TEMP_DIR = NODE_ENV === "dev" ? path.resolve("./tmp") : os.tmpdir();
 const MB = 25;
 
-const bunyan = require('bunyan');
-const { LoggingBunyan } = require('@google-cloud/logging-bunyan');
-const bunyanFormat = require('bunyan-format');
-const loggingBunyanStream = new LoggingBunyan({ logName: 'adobe-transform', redirectToStdout: false });
-
-const loggerStreams = [];
-// 1. Add the pretty-printing stream for local development
-if (NODE_ENV === 'dev') {
-	loggerStreams.push({
-		stream: bunyanFormat({ outputMode: 'short', color: true }), // Pretty print with colors
-		level: 'debug' // Show all debug messages in dev
-	});
-}
-
-loggerStreams.push(
-	loggingBunyanStream.stream('info') // Send info and above to Cloud Logging
-);
-
-
-export const log = bunyan.createLogger({
-	name: 'adobe-transform',
-	streams: loggerStreams
-});
-
+import { log } from './logger.js';
 
 /*
 ----
-CUSTOMER SUPPLIED LOOKUP TABLES
+LAZY-LOADED LOOKUP TABLES
 ----
 */
 
-// standard adobe prop values
-const lookups = await getLookups(`./lookups-standard/`);
-const enumerableLookups = Object.keys(lookups);
-
-// required customer supplied lookups
-const headers = await getHeaders(`./lookups-custom/columns.csv`);
-const standardEventList = await getHashMap(`./lookups-custom/events.tsv`);
+// Cache for lookup tables to prevent re-loading
+let lookups = null;
+let enumerableLookups = null;
+let headers = null;
+let standardEventList = null;
 
 // optional customer supplied lookups
 let CUSTOMER_EVARS = null;
 let CUSTOMER_PROPS = null;
 let CUSTOMER_CUSTOM_EVENTS = null;
+
+// Lazy load lookup tables only when needed
+async function initializeLookups() {
+	if (!lookups) {
+		log.info('Loading standard Adobe lookups...');
+		lookups = await getLookups(`./lookups-standard/`);
+		enumerableLookups = Object.keys(lookups);
+		log.info(`Loaded ${enumerableLookups.length} standard lookups`);
+	}
+	
+	if (!headers) {
+		log.info('Loading column headers...');
+		headers = await getHeaders(`./lookups-custom/columns.csv`);
+		log.info(`Loaded ${headers.length} column headers`);
+	}
+	
+	if (!standardEventList) {
+		log.info('Loading standard event list...');
+		standardEventList = await getHashMap(`./lookups-custom/events.tsv`);
+		log.info(`Loaded ${standardEventList.size} standard events`);
+	}
+}
 
 
 
@@ -90,6 +89,10 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 	if (!cloud_path) {
 		throw new Error("cloud_path is required");
 	}
+	
+	// Initialize lookup tables on first use
+	await initializeLookups();
+	
 	let FILE_IS_GZIPPED = false;
 	if (cloud_path.endsWith('.gz')) {
 		FILE_IS_GZIPPED = true;
@@ -105,6 +108,26 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 	const timer = u.timer('transform');
 	timer.start();
+
+	// Memory monitoring in development
+	if (NODE_ENV === 'dev') {
+		const initialMemory = process.memoryUsage();
+		log.debug({ memory: initialMemory }, 'Initial memory usage');
+		
+		// Monitor memory every 10 seconds during processing
+		const memoryMonitor = setInterval(() => {
+			const currentMemory = process.memoryUsage();
+			log.debug({ 
+				rss: Math.round(currentMemory.rss / 1024 / 1024) + 'MB',
+				heapUsed: Math.round(currentMemory.heapUsed / 1024 / 1024) + 'MB',
+				heapTotal: Math.round(currentMemory.heapTotal / 1024 / 1024) + 'MB'
+			}, 'Memory usage');
+		}, 10000);
+		
+		// Clean up monitor after processing
+		process.on('exit', () => clearInterval(memoryMonitor));
+		process.on('SIGINT', () => clearInterval(memoryMonitor));
+	}
 
 	let TEMP_FILE_TRANSFORMED, TEMP_FILE_TRANSFORMED_PATH, remoteFile;
 
@@ -143,7 +166,9 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 	}
 
 
-	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH);
+	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, {
+		highWaterMark: 16 * 1024 // 16KB buffer
+	});
 	writeStream.on('error', function (err) {
 		log.error(err, "WRITE ERROR!");
 	});
@@ -208,22 +233,55 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		log.error(err, "PARSE ERROR!");
 	});
 
+	let processedRows = 0;
 	const transformStream = new Transform({
-		objectMode: true, // this allows passing objects
+		objectMode: true,
+		highWaterMark: 16, // Reasonable buffer size
 		transform(chunk, encoding, callback) {
-			const mpEvent = adobeToMixpanel(chunk);
-
-			//allow exploding events
-			if (Array.isArray(mpEvent)) {
-				for (const event of mpEvent) {
-					this.push(JSON.stringify(event) + '\n');
+			try {
+				processedRows++;
+				
+				// Log first few rows and every 100 rows in dev mode
+				if (NODE_ENV === 'dev' && (processedRows <= 3 || processedRows % 100 === 0)) {
+					log.debug(`Processed ${processedRows} rows`);
 				}
-			}
 
-			else {
-				this.push(JSON.stringify(mpEvent) + '\n');
+				// Skip null/empty chunks
+				if (!chunk) {
+					if (NODE_ENV === 'dev') log.debug('Skipping null/empty chunk');
+					callback();
+					return;
+				}
+
+				const mpEvent = adobeToMixpanel(chunk);
+
+				// Skip null results
+				if (!mpEvent) {
+					if (NODE_ENV === 'dev') log.debug('Transform returned null result');
+					callback();
+					return;
+				}
+
+				//allow exploding events
+				if (Array.isArray(mpEvent)) {
+					if (NODE_ENV === 'dev' && processedRows <= 3) {
+						log.debug(`Generated ${mpEvent.length} events from row ${processedRows}`);
+					}
+					for (const event of mpEvent) {
+						this.push(JSON.stringify(event) + '\n');
+					}
+				} else {
+					if (NODE_ENV === 'dev' && processedRows <= 3) {
+						log.debug(`Generated 1 event from row ${processedRows}`);
+					}
+					this.push(JSON.stringify(mpEvent) + '\n');
+				}
+				
+				callback();
+			} catch (err) {
+				log.error(err, 'Transform error');
+				callback(err);
 			}
-			callback();
 		}
 	});
 
@@ -236,26 +294,29 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 
 
-	//pipeline
-	await new Promise((resolve, reject) => {
-		let stream = remoteFile.createReadStream();
-		if (FILE_IS_GZIPPED) stream = stream.pipe(zlib.createGunzip());
+	// Build pipeline components
+	const pipelineComponents = [remoteFile.createReadStream()];
+	
+	// Add gzip decompression if needed
+	if (FILE_IS_GZIPPED) {
+		pipelineComponents.push(zlib.createGunzip());
+	}
+	
+	// Add processing stages
+	pipelineComponents.push(parseStream, transformStream, writeStream);
 
-		stream
-			.pipe(parseStream)
-			.pipe(transformStream)
-			.pipe(writeStream)
-			.on('finish', async () => {
-				writeStream.end();
-				resolve();
-
-			})
-			.on('error', (err) => {
-				writeStream.end();
-				reject(err);
-			});
-
-	});
+	// Use Node.js pipeline for proper backpressure handling and cleanup
+	try {
+		await pipelineAsync(...pipelineComponents);
+		log.info('Pipeline completed successfully');
+	} catch (err) {
+		log.error(err, 'Pipeline error');
+		// Clean up any partial files
+		if (fs.existsSync(TEMP_FILE_TRANSFORMED_PATH)) {
+			fs.unlinkSync(TEMP_FILE_TRANSFORMED_PATH);
+		}
+		throw err;
+	}
 
 
 	if (dest_path?.startsWith('gs://')) {
@@ -286,6 +347,11 @@ TRANSFORMS
 //transform adobe to mixpanel
 function adobeToMixpanel(row) {
 	u.removeNulls(row);
+
+	// Early return for empty/invalid rows to save memory
+	if (!row || Object.keys(row).length === 0) {
+		return null;
+	}
 
 	const time =
 		Number(row.hit_time_gmt) ||
@@ -418,13 +484,18 @@ function adobeToMixpanel(row) {
 		};
 	}
 
-	// Assign unique insert_id to each exploded event
+	// Assign unique insert_id and nudge timestamps for proper sequencing
 	const processedEvents = finalEvents.map((evt, index) => {
 		evt.insert_id = `${hitHash}-${index}`;
+		// Nudge timestamps by 5 seconds per index to create logical sequence
+		// First event (index 0) keeps original time, subsequent events get +5s each
+		evt.time = evt.time + (index * 5);
 		return evt;
 	});
 
-	return processedEvents.length === 1 ? processedEvents[0] : processedEvents;
+	// Always return array to ensure consistent timestamp nudging
+	// The stream processor will handle flattening for output
+	return processedEvents;
 }
 
 // resolve row values to human readable values

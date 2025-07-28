@@ -23,10 +23,10 @@ gcloud functions deploy adobe-transform \
     --update-labels snowcat=transformer \
     --no-allow-unauthenticated \
     --env-vars-file .env.yaml \
-    --runtime nodejs18 \
+    --runtime nodejs20 \
     --region us-central1 \
     --trigger-http \
-    --memory 4GB \
+    --memory 8GB \
     --entry-point start \
     --source . \
     --timeout=3600 \
@@ -35,5 +35,5 @@ gcloud functions deploy adobe-transform \
     --concurrency=1
 
 echo "✅ Deployment completed successfully!"
-echo "📊 Function URL: https://us-central1-YOUR_PROJECT_ID.cloudfunctions.net/adobe-transform"
-echo "💡 Don't forget to update YOUR_PROJECT_ID with your actual project ID"
+echo "📊 Function URL: https://adobe-transform-lmozz6xkha-uc.a.run.app"
+echo "💡 Don't forget to update mixpanel-gtm-training with your actual project ID"

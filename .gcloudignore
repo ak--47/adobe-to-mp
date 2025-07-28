@@ -31,8 +31,7 @@ credentials.json
 .env.*
 
 # Legacy lookups (we want to keep lookups-standard/)
-lookups-standard-new-KF/
-lookups-standard-*
+
 
 # Scripts (not needed in cloud)
 scripts/
