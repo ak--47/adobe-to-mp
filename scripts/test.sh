@@ -20,11 +20,20 @@ if [ ! -f "$SAMPLE_FILE" ]; then
 fi
 
 # Create test payload
+# echo "📋 Creating test payload..."
+# TEST_PAYLOAD=$(cat <<EOF
+# {
+#   "cloud_path": "$SAMPLE_FILE",
+#   "dest_path": "./tmp/"
+# }
+# EOF
+# )
+
 echo "📋 Creating test payload..."
 TEST_PAYLOAD=$(cat <<EOF
-{
-  "cloud_path": "$SAMPLE_FILE",
-  "dest_path": "./tmp/"
+{  
+"cloud_path": "gs://korn_ferry_adobe/s3_source/kf-main/01-kornferryproduction_2023-06-01.tsv.gz",  
+"dest_path": "gs://korn_ferry_adobe/transformed/kf-main/" 
 }
 EOF
 )

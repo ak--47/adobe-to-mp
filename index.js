@@ -24,6 +24,15 @@ const NODE_ENV = process.env.NODE_ENV || "unknown";
 const TEMP_DIR = NODE_ENV === "dev" ? path.resolve("./tmp") : os.tmpdir();
 const MB = 25;
 
+// Performance tuning constants
+const PERFORMANCE = {
+	GZIP_CHUNK_SIZE: 64 * 1024 * 2,      // 128KB chunks for gzip decompression
+	TRANSFORM_BUFFER_SIZE: 10000,     // Objects buffered in transform stream
+	WRITE_BUFFER_SIZE: 1024 * 1024 * 10,  // 10MB buffer for file writes
+	PARSE_CHUNK_SIZE: 64 * 1024,     // 64KB chunks for CSV parsing
+	PROGRESS_LOG_INTERVAL: 10000     // Log progress every N rows
+};
+
 import { log } from './logger.js';
 
 /*
@@ -110,73 +119,106 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 	timer.start();
 
 	// Memory monitoring in development
-	if (NODE_ENV === 'dev') {
-		const initialMemory = process.memoryUsage();
-		log.debug({ memory: initialMemory }, 'Initial memory usage');
+	// if (NODE_ENV === 'dev') {
+	// 	const initialMemory = process.memoryUsage();
+	// 	log.debug({ memory: initialMemory }, 'Initial memory usage');
 		
-		// Monitor memory every 10 seconds during processing
-		const memoryMonitor = setInterval(() => {
-			const currentMemory = process.memoryUsage();
-			log.debug({ 
-				rss: Math.round(currentMemory.rss / 1024 / 1024) + 'MB',
-				heapUsed: Math.round(currentMemory.heapUsed / 1024 / 1024) + 'MB',
-				heapTotal: Math.round(currentMemory.heapTotal / 1024 / 1024) + 'MB'
-			}, 'Memory usage');
-		}, 10000);
+	// 	// Monitor memory every 10 seconds during processing
+	// 	const memoryMonitor = setInterval(() => {
+	// 		const currentMemory = process.memoryUsage();
+	// 		log.debug({ 
+	// 			rss: Math.round(currentMemory.rss / 1024 / 1024) + 'MB',
+	// 			heapUsed: Math.round(currentMemory.heapUsed / 1024 / 1024) + 'MB',
+	// 			heapTotal: Math.round(currentMemory.heapTotal / 1024 / 1024) + 'MB'
+	// 		}, 'Memory usage');
+	// 	}, 10000);
 		
-		// Clean up monitor after processing
-		process.on('exit', () => clearInterval(memoryMonitor));
-		process.on('SIGINT', () => clearInterval(memoryMonitor));
-	}
+	// 	// Clean up monitor after processing
+	// 	process.on('exit', () => clearInterval(memoryMonitor));
+	// 	process.on('SIGINT', () => clearInterval(memoryMonitor));
+	// }
 
 	let TEMP_FILE_TRANSFORMED, TEMP_FILE_TRANSFORMED_PATH, remoteFile;
+	let downloadedFilePath = null; // Track downloaded GCS file for cleanup
 
-	//cloud storage setup
+	//cloud storage setup - download file to temp first
 	if (cloud_path.startsWith('gs://')) {
 		try {
-			log.debug(`Running in cloud mode, using ${TEMP_DIR}`);
+			log.debug(`Running in cloud mode, downloading to ${TEMP_DIR}`);
 			const storage = new Storage();
 			const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);
 			const filename = path.basename(cloud_path);
-			const f = { file: filename };
-			TEMP_FILE_TRANSFORMED = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
-			TEMP_FILE_TRANSFORMED_PATH = path.join(TEMP_DIR, TEMP_FILE_TRANSFORMED);
-			log.debug(f, 'streaming + transforming');
-			remoteFile = storage.bucket(bucket).file(cloudURI);
+			const localFilePath = path.join(TEMP_DIR, filename);
+			
+			// Clean up any existing downloaded file
+			if (fs.existsSync(localFilePath)) {
+				log.debug(`Removing existing file: ${localFilePath}`);
+				fs.unlinkSync(localFilePath);
+			}
+			
+			log.info(`Downloading ${cloud_path} to ${localFilePath}`);
+			const downloadTimer = u.timer('download');
+			downloadTimer.start();
+			
+			// Use the simple download method (should be fixed in v7.16.0)
+			const file = storage.bucket(bucket).file(cloudURI);
+			await file.download({ destination: localFilePath });
+			log.debug('Download completed successfully');
+			
+			downloadTimer.stop(false);
+			log.info(`Download completed in ${downloadTimer.report(false).human}`);
+			
+			// Now treat it as a local file
+			downloadedFilePath = localFilePath; // Remember for cleanup
+			cloud_path = localFilePath;
+			FILE_IS_GZIPPED = localFilePath.endsWith('.gz');
+			
 		}
 		catch (err) {
-			log.error(err, "Error parsing cloud path");
+			log.error(err, "Error downloading cloud file");
+			throw err;
 		}
 	}
 
-	//local file setup
-	if (!cloud_path.startsWith('gs://')) {
-		remoteFile = {};
-		TEMP_FILE_TRANSFORMED = path.basename(cloud_path.replace(".tsv.gz", ".ndjson"));
-		TEMP_FILE_TRANSFORMED = path.basename(cloud_path.replace(".tsv", ".ndjson"));
-		TEMP_FILE_TRANSFORMED_PATH = path.join(TEMP_DIR, TEMP_FILE_TRANSFORMED);
-		log.debug(`Running in local mode, using ${TEMP_FILE_TRANSFORMED_PATH} as temp file`);
-		remoteFile.createReadStream = () => {
-			return fs.createReadStream(cloud_path);
-		};
-
+	//local file setup (now handles both original local files and downloaded GCS files)
+	remoteFile = {};
+	
+	// Generate correct output filename (always .ndjson, never .gz since we're creating uncompressed output)
+	let baseName = path.basename(cloud_path);
+	if (baseName.endsWith('.tsv.gz')) {
+		baseName = baseName.replace('.tsv.gz', '.ndjson');
+	} else if (baseName.endsWith('.tsv')) {
+		baseName = baseName.replace('.tsv', '.ndjson');
+	} else {
+		// Fallback for other file extensions
+		const nameWithoutExt = path.parse(baseName).name;
+		baseName = nameWithoutExt + '.ndjson';
 	}
+	
+	TEMP_FILE_TRANSFORMED = baseName;
+	TEMP_FILE_TRANSFORMED_PATH = path.join(TEMP_DIR, TEMP_FILE_TRANSFORMED);
+	log.debug(`Processing local file: ${cloud_path} -> ${TEMP_FILE_TRANSFORMED_PATH}`);
+	remoteFile.createReadStream = () => {
+		return fs.createReadStream(cloud_path);
+	};
 	if (fs.existsSync(TEMP_FILE_TRANSFORMED_PATH)) {
 		fs.unlinkSync(TEMP_FILE_TRANSFORMED_PATH);
 	}
 
 
 	const writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, {
-		highWaterMark: 16 * 1024 // 16KB buffer
+		highWaterMark: PERFORMANCE.WRITE_BUFFER_SIZE // Configurable write buffer
 	});
 	writeStream.on('error', function (err) {
-		log.error(err, "WRITE ERROR!");
+		log.warn(err, "WRITE ERROR - attempting to continue");
+		// Don't immediately fail on write errors
 	});
 
 	const parseStream = Papa.parse(Papa.NODE_STREAM_INPUT, {
 		header: true,
 		fastMode: true,
 		skipEmptyLines: true,
+		chunkSize: PERFORMANCE.PARSE_CHUNK_SIZE, // Configurable parsing chunk size
 		transformHeader: function (header, index) {
 			// debugger;
 			let likelyHeader;
@@ -230,34 +272,33 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 	parseStream.on('error', function (err) {
 		if (NODE_ENV === "dev") debugger;
-		log.error(err, "PARSE ERROR!");
+		log.warn(err, "PARSE ERROR - continuing processing");
+		// Don't stop processing on parse errors
 	});
 
 	let processedRows = 0;
 	const transformStream = new Transform({
 		objectMode: true,
-		highWaterMark: 16, // Reasonable buffer size
+		highWaterMark: PERFORMANCE.TRANSFORM_BUFFER_SIZE, // Configurable transform buffer
 		transform(chunk, encoding, callback) {
 			try {
 				processedRows++;
-				
-				// Log first few rows and every 100 rows in dev mode
-				if (NODE_ENV === 'dev' && (processedRows <= 3 || processedRows % 100 === 0)) {
+
+				// Log progress less frequently to reduce overhead
+				if (NODE_ENV === 'dev' && (processedRows <= 3 || processedRows % PERFORMANCE.PROGRESS_LOG_INTERVAL === 0)) {
 					log.debug(`Processed ${processedRows} rows`);
 				}
 
-				// Skip null/empty chunks
+				// Skip null/empty chunks (remove debug logging for performance)
 				if (!chunk) {
-					if (NODE_ENV === 'dev') log.debug('Skipping null/empty chunk');
 					callback();
 					return;
 				}
 
 				const mpEvent = adobeToMixpanel(chunk);
 
-				// Skip null results
+				// Skip null results (remove debug logging for performance)
 				if (!mpEvent) {
-					if (NODE_ENV === 'dev') log.debug('Transform returned null result');
 					callback();
 					return;
 				}
@@ -287,51 +328,97 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 	transformStream.on('error', function (err) {
 		if (NODE_ENV === "dev") debugger;
-		log.error(err, "TRANSFORM ERROR!");
+		log.warn(err, "TRANSFORM ERROR - continuing processing");
+		// Don't stop processing on transform errors
 	});
 
 
 
 
 
-	// Build pipeline components
+	// Simple local file streaming (much more reliable)
+	log.info('Starting pipeline...');
+	
+	// Build pipeline components with optimized settings
 	const pipelineComponents = [remoteFile.createReadStream()];
 	
 	// Add gzip decompression if needed
 	if (FILE_IS_GZIPPED) {
-		pipelineComponents.push(zlib.createGunzip());
+		const gunzipStream = zlib.createGunzip({
+			chunkSize: PERFORMANCE.GZIP_CHUNK_SIZE // Configurable gzip chunk size
+		});
+		pipelineComponents.push(gunzipStream);
 	}
 	
 	// Add processing stages
 	pipelineComponents.push(parseStream, transformStream, writeStream);
 
-	// Use Node.js pipeline for proper backpressure handling and cleanup
+	// Use Node.js pipeline - now with local files this should be rock solid
 	try {
 		await pipelineAsync(...pipelineComponents);
 		log.info('Pipeline completed successfully');
 	} catch (err) {
 		log.error(err, 'Pipeline error');
-		// Clean up any partial files
-		if (fs.existsSync(TEMP_FILE_TRANSFORMED_PATH)) {
-			fs.unlinkSync(TEMP_FILE_TRANSFORMED_PATH);
+		// Clean up any partial files and downloaded files
+		try {
+			if (fs.existsSync(TEMP_FILE_TRANSFORMED_PATH)) {
+				fs.unlinkSync(TEMP_FILE_TRANSFORMED_PATH);
+			}
+			if (downloadedFilePath && fs.existsSync(downloadedFilePath)) {
+				fs.unlinkSync(downloadedFilePath);
+			}
+		} catch (cleanupErr) {
+			log.warn(cleanupErr, 'Error during error cleanup');
 		}
 		throw err;
 	}
 
 
-	if (dest_path?.startsWith('gs://')) {
-		const { file: upload_path } = u.parseGCSUri(dest_path);
-		log.debug(`uploading to ${upload_path}`);
-		const destination = path.join(upload_path, TEMP_FILE_TRANSFORMED);
-		const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: true });
-		if (NODE_ENV === 'dev') {
-			await u.rm(TEMP_FILE_TRANSFORMED_PATH);
+	// Clean up function to remove temp files
+	const cleanupTempFiles = async () => {
+		try {
+			// Clean up downloaded GCS file
+			if (downloadedFilePath && fs.existsSync(downloadedFilePath)) {
+				log.debug(`Cleaning up downloaded file: ${downloadedFilePath}`);
+				fs.unlinkSync(downloadedFilePath);
+			}
+			
+			// Clean up transformed output file (only in dev or after upload)
+			if (NODE_ENV === 'dev' || dest_path?.startsWith('gs://')) {
+				if (fs.existsSync(TEMP_FILE_TRANSFORMED_PATH)) {
+					log.debug(`Cleaning up transformed file: ${TEMP_FILE_TRANSFORMED_PATH}`);
+					fs.unlinkSync(TEMP_FILE_TRANSFORMED_PATH);
+				}
+			}
+		} catch (cleanupErr) {
+			log.warn(cleanupErr, 'Error during temp file cleanup');
 		}
+	};
+
+	if (dest_path?.startsWith('gs://')) {
+		const storage = new Storage();
+		const { bucket, file: upload_path } = u.parseGCSUri(dest_path);
+		log.debug(`uploading to ${upload_path}`);
+		
+		// For GCS upload, add .gz extension since we're compressing during upload
+		const uploadFileName = TEMP_FILE_TRANSFORMED.replace('.ndjson', '.ndjson.gz');
+		const destination = path.join(upload_path, uploadFileName);
+		const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: true });
+		
+		// Clean up temp files after successful upload
+		await cleanupTempFiles();
+		
 		timer.stop(false);
 		return { ...timer.report(false), source: cloud_path, destination: 'gs://'.concat(bucket).concat('/').concat(uploaded.name) };
 
 	}
 	else {
+		// Clean up downloaded file but keep the transformed output for local processing
+		if (downloadedFilePath && fs.existsSync(downloadedFilePath)) {
+			log.debug(`Cleaning up downloaded file: ${downloadedFilePath}`);
+			fs.unlinkSync(downloadedFilePath);
+		}
+		
 		timer.stop(false);
 		return { ...timer.report(false), source: cloud_path, destination: TEMP_FILE_TRANSFORMED_PATH };
 	}
@@ -555,7 +642,7 @@ function cleanAdobeRaw(value, header, foo) {
 			}
 			//if we can't resolve the event name, return the original format
 			else {
-				if (NODE_ENV === "dev") debugger;
+				// if (NODE_ENV === "dev") debugger;
 				return eventItem; // Return original format (e.g., "999" or "999=25")
 			}
 		});

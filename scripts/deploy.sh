@@ -14,8 +14,8 @@ if [ ! -f ".env.yaml" ]; then
 fi
 
 # Clean temporary files before deployment
-echo "🧹 Cleaning temporary files..."
-npm run prune
+# echo "🧹 Cleaning temporary files..."
+# npm run prune
 
 echo "📦 Deploying to Google Cloud Functions..."
 gcloud functions deploy adobe-transform \
