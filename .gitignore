@@ -28,6 +28,13 @@ lookups-custom/*
 !lookups/.gitkeep
 lookups-standard/*
 !lookups-standard/.gitkeep
+lookups-standard-*
+request-builder.mjs
+lookups-standard-*
+CLAUDE.md
+request-builder.mjs
+lexicon-builder.mjs
 
 node_modules
 old
+credentials.json

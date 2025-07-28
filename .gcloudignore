@@ -6,3 +6,8 @@ tmp
 .git
 scratch.mjs
 request-builder.js
+credentials.json
+lookups-standard-*
+CLAUDE.md
+request-builder.mjs
+lexicon-builder.mjs
