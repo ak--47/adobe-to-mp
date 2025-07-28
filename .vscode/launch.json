@@ -1,32 +1,34 @@
 {
+	// Adobe to Mixpanel ETL - VS Code Launch Configurations
 	// Use IntelliSense to learn about possible attributes.
-	// Hover to view descriptions of existing attributes.
-	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
 	"version": "0.2.0",
 	"configurations": [
 		{
 			"type": "node-terminal",
 			"request": "launch",
-			"name": "func",
-			"command": "npm run prune && npm run func"
+			"name": "🚀 Deploy",
+			"command": "npm run deploy",			
 		},
 		{
-			"type": "node",
+			"type": "node-terminal",
 			"request": "launch",
-			"name": "go",
-			"runtimeExecutable": "nodemon",
-			"program": "${file}",
-			"restart": true,
-			"console": "integratedTerminal",
-			"internalConsoleOptions": "neverOpen",
+			"name": "🏠 Local",
+			"command": "npm run local",
 			"env": {
 				"NODE_ENV": "dev"
 			}
 		},
 		{
+			"type": "node-terminal",
+			"request": "launch",
+			"name": "🧪 Test",
+			"command": "npm run test",
+			
+		},
+		{
 			"type": "node",
 			"request": "launch",
-			"name": "scratch",
+			"name": "🔧 Scratch",
 			"runtimeExecutable": "nodemon",
 			"program": "scratch.mjs",
 			"restart": true,
@@ -34,7 +36,43 @@
 			"internalConsoleOptions": "neverOpen",
 			"env": {
 				"NODE_ENV": "dev"
-			}
+			},
+			
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "📦 Build Req",
+			"runtimeExecutable": "nodemon",
+			"program": "request-builder.mjs",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"NODE_ENV": "dev"
+			},
+			
+		},
+		{
+			"type": "node-terminal",
+			"request": "launch",
+			"name": "🧹 Clean",
+			"command": "npm run prune",
+			
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "📁 CURRENT",
+			"runtimeExecutable": "nodemon",
+			"program": "${file}",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"NODE_ENV": "dev"
+			},
+			
 		}
 	]
 }

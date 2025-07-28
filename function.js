@@ -3,7 +3,8 @@
 import functions from '@google-cloud/functions-framework';
 import u from 'ak-tools';
 import path from 'path';
-import { main, log } from './index.js';
+import main, { log } from './index.js';
+import { AGGREGATED_GUIDES } from './korn-ferry-guides.js';
 
 /*
 ----
@@ -14,11 +15,10 @@ CLOUD ENTRY
 
 functions.http('start', async (req, res) => {
 	try {
-		const sourceFile = getFileName(req.body.cloud_path);
-		log.info({ file: sourceFile, ...req.body }, "TRANSFORM START");
+		log.info({ ...req.body }, "TRANSFORM START");
 		const { cloud_path, dest_path } = req.body;
-		const { human, delta } = await main(cloud_path, dest_path);
-		log.info({ file: sourceFile, elapsed: delta, ...req.body }, `TRANSFORM END: ${human}`);
+		const { human, delta, source, destination, ...results } = await main(cloud_path, dest_path, AGGREGATED_GUIDES);
+		log.info({ source, destination, elapsed: delta, ...req.body, ...results }, `TRANSFORM END: ${human}`);
 		res.status(200).send({ status: "OK" });
 	} catch (e) {
 		log.error({ error: e, body: req.body }, "ERROR!");
@@ -27,8 +27,4 @@ functions.http('start', async (req, res) => {
 });
 
 
-function getFileName(cloud_path) {
-	const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);
-	const filename = path.basename(cloud_path);
-	return filename;
-}
+

@@ -1,13 +1,45 @@
-.vscode
-node_modules
-old
-sample
-tmp
-.git
-scratch.mjs
-request-builder.js
-credentials.json
-lookups-standard-*
+# Development files
+.vscode/
+.git/
+.gitignore
+node_modules/
+*.log
+
+# Documentation and guides
 CLAUDE.md
+README.md
+guides/
+
+# Development and testing files
+scratch.mjs
 request-builder.mjs
 lexicon-builder.mjs
+request-builder.js
+nykaafiles.mjs
+
+# Sample and temporary data
+sample/
+tmp/
+old/
+fake/
+sampleData/
+
+# Credentials and sensitive files
+credentials.json
+.env
+.env.yaml
+.env.*
+
+# Legacy lookups (we want to keep lookups-standard/)
+lookups-standard-new-KF/
+lookups-standard-*
+
+# Scripts (not needed in cloud)
+scripts/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

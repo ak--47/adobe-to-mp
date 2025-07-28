@@ -2,18 +2,14 @@
   "name": "adobe-to-mixpanel",
   "version": "1.0.0",
   "description": "ETL from adbobe omniture to mixpanel",
-  "main": "index.js",
+  "main": "function.js",
   "scripts": {
     "dev": "npm run prune && NODE_ENV=dev nodemon --ignore tmp/ --ignore fake/ --ignore sampleData/ --inspect scratch.mjs | bunyan -o short",
-    "func": "NODE_ENV=prod functions-framework --target=start --source . --signature-type=http | bunyan -o short",
-    "localDeploy": "gcloud alpha functions local deploy adobe_local --entry-point=start --runtime=nodejs18  --env-vars-file .env.yaml",
-    "localRun": "gcloud alpha functions local call adobe_local --data='{ \"cloud_path\": \"gs://nykaa-adobe/testStuff/SRC/SMALL-SAMPLE.tsv.gz\", \"dest_path\": \"gs://nykaa-adobe/testStuff/MIRROR\" }'",
-    "deploy": "gcloud alpha functions deploy nykaa-transform --gen2 --update-labels snowcat=transformer  --no-allow-unauthenticated  --env-vars-file .env.yaml --runtime nodejs18 --region us-central1 --trigger-http --memory 4GB --entry-point start --source . --timeout=3600 --max-instances=3355 --min-instances=0 --concurrency=1",
+    "local": "./scripts/local.sh",
+    "deploy": "./scripts/deploy.sh",
+    "test": "./scripts/test.sh",
     "prune": "rm -rf ./tmp/*",
-    "buildReq": "nodemon --ignore tmp/ request-builder.mjs",
-    "express": "node index.js",
-    "dockerBuild": "DOCKER_BUILDKIT=1 docker build -t us.gcr.io/mixpanel-gtm-training/nykaa-adobe-transform:dev .",
-    "dockerPush": "docker push us.gcr.io/mixpanel-gtm-training/nykaa-adobe-transform:dev"
+    "buildReq": "nodemon --ignore tmp/ request-builder.mjs"
   },
   "repository": {
     "type": "git",

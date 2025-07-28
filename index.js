@@ -87,6 +87,9 @@ MAIN
  * @param  {CustomerLookups} LOOKUPS={}
  */
 async function main(cloud_path, dest_path, LOOKUPS = {}) {
+	if (!cloud_path) {
+		throw new Error("cloud_path is required");
+	}
 	let FILE_IS_GZIPPED = false;
 	if (cloud_path.endsWith('.gz')) {
 		FILE_IS_GZIPPED = true;
@@ -289,144 +292,139 @@ function adobeToMixpanel(row) {
 		Number(row.cust_hit_time_gmt) ||
 		Number(row.last_hit_time_gmt);
 
-	// Base properties shared across all events from this hit
+	// 1. PREPARE: Gather base properties and identifiers
 	const baseProperties = {
 		time,
 		distinct_id: row.mcvisid,
 		...row
 	};
 
-	//use visid_high and visid_low if it's available
+	// Use the more reliable visitor ID if available
 	if ((row.visid_high !== "0" && row.visid_high) || (row.visid_low !== "0" && row.visid_low)) {
 		baseProperties.distinct_id = `${row.visid_high}${row.visid_low}`;
 	}
 
-	// Generate insert_id for deduplication
-	const hash = quickHash(`${row?.hitid_high || ""}-${row?.hitid_low || ""}`);
-	baseProperties.insert_id = hash;
-
-	const events = [];
-	let eventIndex = 0;
-
-	// Check hit type based on post_page_event
+	const hitHash = quickHash(`${row?.hitid_high || ""}-${row?.hitid_low || ""}`);
 	const isPageView = row.post_page_event === "0" || row.post_page_event === 0;
 
+	// A more robust set of events that are really measurements/properties
+	const MEASUREMENT_EVENTS = new Set([
+		'Page Load Time',
+		'Page Load Time Previous Page',
+		'Time Spent on Page',
+		'Download Time',
+		'Connection Speed',
+		'Bandwidth',
+		'Screen Resolution',
+		'Color Depth',
+		'Java Version',
+		'Flash Version',
+		'Monitor Resolution',
+		'Browser Height',
+		'Browser Width',
+		'File Size',
+		'Form Field Progress',
+		'Searchlight Content Health Score',
+		// 'Page Scroll 25',
+		// 'Page Scroll 50',
+		// 'Page Scroll 75',
+		// 'Page Scroll 100',
+		// 'accordionExpanded',
+		// 'accordionCollapse'		
+	]);
+
+	// Events that are usually noise or internal tracking details from Adobe
+	const IGNORED_EVENTS = new Set([
+		'Page Name', // This is a dimension, not an event
+		'Instance of eVar4',
+		'Instance of eVar11',
+		'Instance of eVar32',
+		'Filter' // Internal Adobe filtering events
+	]);
+
+	const allEventItems = row.post_event_list || [];
+	const measurementProperties = {};
+	const realEventNames = [];
+
+	// Separate event_list into real events vs. measurements vs. ignored
+	for (const eventItem of allEventItems) {
+		const eventName = typeof eventItem === 'string' ? eventItem : eventItem.name;
+		const eventValue = typeof eventItem === 'object' ? eventItem.value : null;
+
+		if (IGNORED_EVENTS.has(eventName)) continue;
+
+		if (MEASUREMENT_EVENTS.has(eventName)) {
+			const propKey = eventName.toLowerCase().replace(/\s+/g, '_');
+			// Use the numeric value if available, otherwise mark as true
+			measurementProperties[propKey] = eventValue || row[eventName] || true;
+		} else {
+			realEventNames.push({ name: eventName, value: eventValue });
+		}
+	}
+
+	// 2. DETERMINE PRIMARY & SECONDARY EVENTS
+	const finalEvents = [];
+
 	if (isPageView) {
-		// This is a Page View hit (s.t() call)
-		// Create a "Page Viewed" event
+		// The primary event for this hit is "Page Viewed"
 		const pageViewEvent = {
 			event: "Page Viewed",
 			...baseProperties,
-			insert_id: `${hash}-${eventIndex}`,
-			page_name: row["Page Name"] || row.post_pagename || row.pagename // Use resolved page name
+			...measurementProperties, // Add measurements to page view
+			page_name: row["Page Name"] || row.post_pagename || row.pagename
 		};
-		events.push(pageViewEvent);
-		eventIndex++;
-	}
+		finalEvents.push(pageViewEvent);
 
-	// Process additional events from post_event_list (both page views and link tracking hits)
-	if (row.post_event_list && Array.isArray(row.post_event_list) && row.post_event_list.length > 0) {
-		// Events that should be properties, not separate events (typically metrics/measurements)
-		const propertyEvents = new Set([
-			'Page Load Time',
-			'Page Load Time Previous Page',
-			'Time Spent on Page',
-			'Download Time',
-			'Connection Speed',
-			'Bandwidth',
-			'Screen Resolution',
-			'Color Depth',
-			'Java Version',
-			'Flash Version',
-			'Monitor Resolution',
-			'Browser Height',
-			'Browser Width',
-			'File Size',
-			'Form Field Progress',
-			'Instance of eVar11', // This seems like a tracking instance, not an event
-			'Instance of eVar32', // Similar tracking instance
-			'Filter', // This seems like a technical/system event
-			'Searchlight Content Health Score', // This is a metric
-			'accordionExpanded', // UI state changes
-			'accordionCollapse',
-			'Ceros Component Click Event' // Technical tracking events
-		]);
-
-		// Separate events into real events vs properties
-		const realEvents = [];
-		const eventProperties = {};
-
-		row.post_event_list.forEach(eventItem => {
-			const eventName = typeof eventItem === 'string' ? eventItem : eventItem.name;
-			const eventValue = typeof eventItem === 'object' ? eventItem.value : null;
-
-			// Skip "Page Name" events since those are handled above for page views
-			if (eventName === "Page Name") {
-				return;
-			}
-
-			// If this is a measurement/metric, add it as a property
-			if (propertyEvents.has(eventName)) {
-				const propertyKey = eventName.toLowerCase().replace(/\s+/g, '_');
-				eventProperties[propertyKey] = eventValue || true;
-			} else {
-				// This is a real business event
-				realEvents.push(eventItem);
-			}
-		});
-
-		// Add measurement properties to the main event if we have any
-		if (Object.keys(eventProperties).length > 0 && events.length > 0) {
-			events[0] = { ...events[0], ...eventProperties };
+		// Create additional events for other real business actions on that page load
+		for (const eventItem of realEventNames) {
+			finalEvents.push({
+				event: eventItem.name,
+				...baseProperties,
+				...measurementProperties, // Add measurements to all events
+				...(eventItem.value && { event_value: eventItem.value })
+			});
 		}
 
-		// If we have properties but no main event yet, create one for non-page view hits
-		if (Object.keys(eventProperties).length > 0 && events.length === 0) {
-			events.push({
+	} else {
+		// This is a Link Tracking hit (s.tl). Do NOT create "Page Viewed".
+		// Find the most important action to be the event name.
+		if (realEventNames.length > 0) {
+			for (const eventItem of realEventNames) {
+				finalEvents.push({
+					event: eventItem.name,
+					...baseProperties,
+					...measurementProperties, // Add measurements to all events
+					...(eventItem.value && { event_value: eventItem.value })
+				});
+			}
+		} else if (Object.keys(measurementProperties).length > 0) {
+			// Fallback if no "real" events are found, but we have measurements
+			const fallbackEvent = {
 				event: "Action Tracked",
 				...baseProperties,
-				...eventProperties,
-				insert_id: `${hash}-${eventIndex}`
-			});
-			eventIndex++;
-		}
-
-		// Create separate events for real business events
-		const eventObjects = realEvents.map((eventItem) => {
-			const eventName = typeof eventItem === 'string' ? eventItem : eventItem.name;
-			const eventValue = typeof eventItem === 'object' ? eventItem.value : null;
-
-			const mixpanelEvent = {
-				event: eventName,
-				...baseProperties,
-				insert_id: `${hash}-${eventIndex}`
+				...measurementProperties
 			};
-
-			// Add event value if present
-			if (eventValue) {
-				mixpanelEvent.event_value = eventValue;
-			}
-
-			eventIndex++;
-			return mixpanelEvent;
-		});
-
-		events.push(...eventObjects);
+			finalEvents.push(fallbackEvent);
+		}
 	}
 
-	// Return single event or array based on count
-	if (events.length === 1) {
-		return events[0];
-	} else if (events.length > 1) {
-		return events;
+	// 3. GENERATE FINAL OUTPUT with unique insert_ids
+	if (finalEvents.length === 0) {
+		// Absolute fallback: if no events could be determined at all
+		return {
+			event: isPageView ? "Page Viewed" : "Unknown Action",
+			...baseProperties,
+			insert_id: hitHash // Only one event, no index needed
+		};
 	}
 
-	// Fallback: No meaningful events found
-	return {
-		event: isPageView ? "Page Viewed" : "Unknown Action",
-		...baseProperties,
-		insert_id: hash
-	};
+	// Assign unique insert_id to each exploded event
+	const processedEvents = finalEvents.map((evt, index) => {
+		evt.insert_id = `${hitHash}-${index}`;
+		return evt;
+	});
+
+	return processedEvents.length === 1 ? processedEvents[0] : processedEvents;
 }
 
 // resolve row values to human readable values
