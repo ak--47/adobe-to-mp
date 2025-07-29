@@ -25,7 +25,8 @@ if (NODE_ENV !== 'dev') {
     try {
         const loggingBunyanStream = new LoggingBunyan({ 
             logName: 'adobe-transform', 
-            redirectToStdout: true  // This is key for Cloud Functions
+            redirectToStdout: true,  // This is key for Cloud Functions
+			projectId: process.env.GOOGLE_CLOUD_PROJECT || 'mixpanel-gtm-training' // Ensure project ID is set
         });
         loggerStreams.push(loggingBunyanStream.stream('info'));
     } catch (err) {

@@ -56,20 +56,20 @@ let CUSTOMER_CUSTOM_EVENTS = null;
 async function initializeLookups() {
 	// Check if any lookups need to be loaded
 	const needsLookups = !lookups;
-	const needsHeaders = !headers;  
+	const needsHeaders = !headers;
 	const needsEvents = !standardEventList;
-	
+
 	if (!needsLookups && !needsHeaders && !needsEvents) {
 		return; // All already loaded
 	}
-	
+
 	log.debug('Loading lookup tables in parallel...');
 	const loadTimer = u.timer('lookup-loading');
 	loadTimer.start();
-	
+
 	// Load all required lookups in parallel
 	const promises = [];
-	
+
 	if (needsLookups) {
 		promises.push(
 			getLookups(`./lookups-standard/`).then(result => {
@@ -79,7 +79,7 @@ async function initializeLookups() {
 			})
 		);
 	}
-	
+
 	if (needsHeaders) {
 		promises.push(
 			getHeaders(`./lookups-custom/columns.csv`).then(result => {
@@ -88,7 +88,7 @@ async function initializeLookups() {
 			})
 		);
 	}
-	
+
 	if (needsEvents) {
 		promises.push(
 			getHashMap(`./lookups-custom/events.tsv`).then(result => {
@@ -97,13 +97,13 @@ async function initializeLookups() {
 			})
 		);
 	}
-	
+
 	// Wait for all to complete
 	const results = await Promise.all(promises);
-	
+
 	loadTimer.stop(false);
-	log.debug(`Parallel loading completed in ${loadTimer.report(false).duration}ms:`);
-	results.forEach(r => log.debug(`- Loaded ${r.count} ${r.type}`));
+	log.debug(`Parallel loading completed in ${loadTimer.report(false).human}`);
+	results.forEach(r => log.debug(`\t- Loaded ${r.count} ${r.type}`));
 }
 
 
@@ -131,10 +131,10 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 	if (!cloud_path) {
 		throw new Error("cloud_path is required");
 	}
-	
+
 	// Initialize lookup tables on first use
 	await initializeLookups();
-	
+
 	let FILE_IS_GZIPPED = false;
 	if (cloud_path.endsWith('.gz')) {
 		FILE_IS_GZIPPED = true;
@@ -142,7 +142,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 	if (Object.keys(LOOKUPS).length === 0) {
 		log.info('no customer lookups provided, no evars, props, or customer events will be resolved');
-	} 
+	}
 	else {
 		CUSTOMER_EVARS = LOOKUPS.evars || null;
 		CUSTOMER_PROPS = LOOKUPS.props || null;
@@ -152,14 +152,14 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 	const timer = u.timer('transform');
 	timer.start();
 
-	
+
 	let TEMP_FILE_TRANSFORMED, TEMP_FILE_TRANSFORMED_PATH, remoteFile;
 	let downloadedFilePath = null; // Track downloaded GCS file for cleanup
 
 	// Determine if we're in pure cloud mode (GCS input + GCS output)
 	const isCloudMode = cloud_path.startsWith('gs://') && dest_path?.startsWith('gs://');
 	// const isLocalMode = !cloud_path.startsWith('gs://'); // Unused but kept for clarity
-	
+
 	// Cloud storage setup
 	if (cloud_path.startsWith('gs://') && !isCloudMode) {
 		// Mixed mode: GCS input but local output - download file first
@@ -169,30 +169,30 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 			const { bucket, file: cloudURI } = u.parseGCSUri(cloud_path);
 			const filename = path.basename(cloud_path);
 			const localFilePath = path.join(TEMP_DIR, filename);
-			
+
 			// Clean up any existing downloaded file
 			if (fs.existsSync(localFilePath)) {
 				log.debug(`Removing existing file: ${localFilePath}`);
 				fs.unlinkSync(localFilePath);
 			}
-			
+
 			log.info(`Downloading ${cloud_path} to ${localFilePath}`);
 			const downloadTimer = u.timer('download');
 			downloadTimer.start();
-			
+
 			// Use the simple download method (should be fixed in v7.16.0)
 			const file = storage.bucket(bucket).file(cloudURI);
 			await file.download({ destination: localFilePath });
 			log.debug('Download completed successfully');
-			
+
 			downloadTimer.stop(false);
 			log.info(`Download completed in ${downloadTimer.report(false).human}`);
-			
+
 			// Now treat it as a local file
 			downloadedFilePath = localFilePath; // Remember for cleanup
 			cloud_path = localFilePath;
 			FILE_IS_GZIPPED = localFilePath.endsWith('.gz');
-			
+
 		}
 		catch (err) {
 			log.error(err, "Error downloading cloud file");
@@ -202,7 +202,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 	// Setup file handling based on mode
 	remoteFile = {};
-	
+
 	if (isCloudMode) {
 		// Pure cloud mode - stream everything, no local files
 		log.debug('Running in pure cloud mode - streaming input and output');
@@ -211,17 +211,17 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		remoteFile.createReadStream = () => {
 			return storage.bucket(inputBucket).file(inputFile).createReadStream();
 		};
-		
+
 		// No local temp file in cloud mode
 		TEMP_FILE_TRANSFORMED_PATH = null;
-		
+
 	} else {
 		// Local mode or mixed mode - use local files
 		log.debug(`Processing local file: ${cloud_path}`);
 		remoteFile.createReadStream = () => {
 			return fs.createReadStream(cloud_path);
 		};
-		
+
 		// Generate correct output filename (always .ndjson, never .gz since we're creating uncompressed output)
 		let baseName = path.basename(cloud_path);
 		if (baseName.endsWith('.tsv.gz')) {
@@ -233,10 +233,10 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 			const nameWithoutExt = path.parse(baseName).name;
 			baseName = nameWithoutExt + '.ndjson';
 		}
-		
+
 		TEMP_FILE_TRANSFORMED = baseName;
 		TEMP_FILE_TRANSFORMED_PATH = path.join(TEMP_DIR, TEMP_FILE_TRANSFORMED);
-		
+
 		if (fs.existsSync(TEMP_FILE_TRANSFORMED_PATH)) {
 			fs.unlinkSync(TEMP_FILE_TRANSFORMED_PATH);
 		}
@@ -249,7 +249,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		// Pure cloud mode - stream directly to GCS
 		const storage = new Storage();
 		const { bucket: outputBucket, file: outputPath } = u.parseGCSUri(dest_path);
-		
+
 		// Generate output filename
 		let outputBaseName = path.basename(cloud_path);
 		if (outputBaseName.endsWith('.tsv.gz')) {
@@ -260,10 +260,10 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 			const nameWithoutExt = path.parse(outputBaseName).name;
 			outputBaseName = nameWithoutExt + '.ndjson.gz';
 		}
-		
+
 		const destination = path.join(outputPath, outputBaseName);
 		log.debug(`Streaming output to: gs://${outputBucket}/${destination}`);
-		
+
 		writeStream = storage.bucket(outputBucket).file(destination).createWriteStream({
 			metadata: {
 				contentType: 'application/x-ndjson',
@@ -271,14 +271,14 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 			},
 			gzip: true
 		});
-		
+
 	} else {
 		// Local/mixed mode - write to local file
 		writeStream = createWriteStream(TEMP_FILE_TRANSFORMED_PATH, {
 			highWaterMark: PERFORMANCE.WRITE_BUFFER_SIZE // Configurable write buffer
 		});
 	}
-	
+
 	writeStream.on('error', function (err) {
 		log.warn(err, "WRITE ERROR - attempting to continue");
 		// Don't immediately fail on write errors
@@ -294,7 +294,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 			let likelyHeader;
 			likelyHeader = headers[index].trim();
 			if (!likelyHeader && NODE_ENV === "dev") debugger;
-			
+
 			if (CUSTOMER_EVARS) {
 				if (likelyHeader?.toLowerCase()?.startsWith("evar") || likelyHeader?.toLowerCase()?.startsWith("post_evar")) {
 					const evarNum = likelyHeader.match(/\d+/);
@@ -306,7 +306,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 					// if (!evar && NODE_ENV === "dev") debugger
 				}
 			}
-			
+
 			if (CUSTOMER_PROPS) {
 				if (likelyHeader?.toLowerCase()?.startsWith("prop") || likelyHeader?.toLowerCase()?.startsWith("post_prop")) {
 					const propNum = likelyHeader.match(/\d+/);
@@ -318,7 +318,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 					// if (!prop && NODE_ENV === "dev") debugger;
 				}
 			}
-			
+
 			// if (CUSTOMER_CUSTOM_EVENTS) {
 			// 	if (likelyHeader?.toLowerCase()?.includes("event")) {
 			// 		const customEventNum = likelyHeader.match(/\d+/);
@@ -383,7 +383,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 				} else {
 					this.push(JSON.stringify(mpEvent) + '\n');
 				}
-				
+
 				callback();
 			} catch (err) {
 				log.error(err, 'Transform error');
@@ -400,10 +400,12 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 	// Simple local file streaming (much more reliable)
 	log.info('Starting pipeline...');
-	
+	const pipelineTimer = u.timer('pipeline');
+	pipelineTimer.start();
+
 	// Build pipeline components with optimized settings
 	const pipelineComponents = [remoteFile.createReadStream()];
-	
+
 	// Add gzip decompression if needed
 	if (FILE_IS_GZIPPED) {
 		const gunzipStream = zlib.createGunzip({
@@ -411,16 +413,18 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		});
 		pipelineComponents.push(gunzipStream);
 	}
-	
+
 	// Add processing stages
 	pipelineComponents.push(parseStream, transformStream, writeStream);
 
 	// Use Node.js pipeline - now with local files this should be rock solid
 	try {
 		await pipelineAsync(...pipelineComponents);
-		log.info('... pipeline completed');
+		pipelineTimer.stop(false);
+		log.info(`... Pipeline completed successfully in ${pipelineTimer.report(false).human}`);
 	} catch (err) {
-		log.error(err, 'Pipeline error');
+		pipelineTimer.stop(false);
+		log.error(err, `Pipeline error in ${pipelineTimer.report(false).human}`);
 		// Clean up any partial files and downloaded files (only in local/mixed mode)
 		if (!isCloudMode) {
 			try {
@@ -446,7 +450,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 				log.debug(`Cleaning up downloaded file: ${downloadedFilePath}`);
 				fs.unlinkSync(downloadedFilePath);
 			}
-			
+
 			// Clean up transformed output file (only in dev or after upload)
 			if (NODE_ENV === 'dev' || dest_path?.startsWith('gs://')) {
 				if (fs.existsSync(TEMP_FILE_TRANSFORMED_PATH)) {
@@ -474,21 +478,21 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		}
 		const destination = path.join(outputPath, outputBaseName);
 		return { ...timer.report(false), source: cloud_path, destination: `gs://${outputBucket}/${destination}` };
-		
+
 	} else if (dest_path?.startsWith('gs://')) {
 		// Mixed mode - upload local file to GCS
 		const storage = new Storage();
 		const { bucket, file: upload_path } = u.parseGCSUri(dest_path);
 		log.debug(`uploading to ${upload_path}`);
-		
+
 		// For GCS upload, add .gz extension since we're compressing during upload
 		const uploadFileName = TEMP_FILE_TRANSFORMED.replace('.ndjson', '.ndjson.gz');
 		const destination = path.join(upload_path, uploadFileName);
 		const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: true });
-		
+
 		// Clean up temp files after successful upload
 		await cleanupTempFiles();
-		
+
 		timer.stop(false);
 		return { ...timer.report(false), source: cloud_path, destination: 'gs://'.concat(bucket).concat('/').concat(uploaded.name) };
 
@@ -498,7 +502,7 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 			log.debug(`Cleaning up downloaded file: ${downloadedFilePath}`);
 			fs.unlinkSync(downloadedFilePath);
 		}
-		
+
 		timer.stop(false);
 		return { ...timer.report(false), source: cloud_path, destination: TEMP_FILE_TRANSFORMED_PATH };
 	}
@@ -794,18 +798,18 @@ async function getLookups(standardLookupsFolder) {
 	const results = {};
 	for (const lookup of standardLookups) {
 		const lookupName = path.basename(lookup, '.csv').replace(".tsv", "");
-		
+
 		// Load and parse file
 		let rawFile = await u.load(lookup);
 		let lookupData = Papa.parse(rawFile, { header: false }).data;
-		
+
 		// Create map and immediately null intermediate vars to free memory
 		const lookupMap = new Map(lookupData.map(i => [i[0], i[1]]));
 		rawFile = null; // Explicit cleanup
 		lookupData = null; // Explicit cleanup
-		
+
 		results[lookupName] = lookupMap;
-		
+
 		// Force garbage collection hint (if available)
 		if (global.gc && NODE_ENV === 'dev') {
 			global.gc();
@@ -818,22 +822,22 @@ async function getHashMap(customLookupsFile, replacePhrase, keyCol = 0, ValueCol
 	// Load and parse file
 	let rawFile = await u.load(customLookupsFile);
 	let parsedFile = Papa.parse(rawFile, { header: false }).data;
-	
+
 	// Create map and immediately null intermediate vars to free memory
 	const lookup = new Map(parsedFile.map(i => {
 		if (replacePhrase) return [i[keyCol].toString().replace(replacePhrase, "").toLowerCase(), i[ValueCol]];
 		return [i[keyCol], i[ValueCol]];
 	}));
-	
+
 	// Explicit cleanup
 	rawFile = null;
 	parsedFile = null;
-	
+
 	// Force garbage collection hint (if available)
 	if (global.gc && NODE_ENV === 'dev') {
 		global.gc();
 	}
-	
+
 	return lookup;
 }
 
@@ -841,19 +845,19 @@ async function getWhitelist(file, column = 0, separator = "/") {
 	// Load and parse file
 	let rawFile = await u.load(file);
 	let parsedFile = Papa.parse(rawFile, { header: false }).data;
-	
+
 	// Create whitelist and immediately null intermediate vars to free memory
 	const whitelist = parsedFile.map(i => i[column].split(separator)[1]).filter(a => a);
-	
+
 	// Explicit cleanup
 	rawFile = null;
 	parsedFile = null;
-	
+
 	// Force garbage collection hint (if available)
 	if (global.gc && NODE_ENV === 'dev') {
 		global.gc();
 	}
-	
+
 	return whitelist;
 }
 
@@ -861,19 +865,19 @@ async function getHeaders(headersFile) {
 	// Load and parse file
 	let rawFile = await u.load(headersFile);
 	let parsedFile = Papa.parse(rawFile, { header: false }).data;
-	
+
 	// Get headers and immediately null intermediate vars to free memory
 	const headers = parsedFile[0];
-	
+
 	// Explicit cleanup
 	rawFile = null;
 	parsedFile = null;
-	
+
 	// Force garbage collection hint (if available)
 	if (global.gc && NODE_ENV === 'dev') {
 		global.gc();
 	}
-	
+
 	return headers;
 }
 

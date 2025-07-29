@@ -19,24 +19,26 @@ if [ ! -f "$SAMPLE_FILE" ]; then
     exit 1
 fi
 
+# LOCAL TEST PAYLOAD
 # Create test payload
-# echo "📋 Creating test payload..."
-# TEST_PAYLOAD=$(cat <<EOF
-# {
-#   "cloud_path": "$SAMPLE_FILE",
-#   "dest_path": "./tmp/"
-# }
-# EOF
-# )
-
 echo "📋 Creating test payload..."
 TEST_PAYLOAD=$(cat <<EOF
-{  
-"cloud_path": "gs://korn_ferry_adobe/s3_source/kf-main/01-kornferryproduction_2023-06-01.tsv.gz",  
-"dest_path": "gs://korn_ferry_adobe/transformed/kf-main/" 
+{
+  "cloud_path": "$SAMPLE_FILE",
+  "dest_path": "./tmp/"
 }
 EOF
 )
+
+# CLOUD TEST PAYLOAD
+# echo "📋 Creating test payload..."
+# TEST_PAYLOAD=$(cat <<EOF
+# {  
+# "cloud_path": "gs://korn_ferry_adobe/s3_source/kf-main/01-kornferryproduction_2023-06-01.tsv.gz",  
+# "dest_path": "gs://korn_ferry_adobe/transformed/kf-main/" 
+# }
+# EOF
+# )
 
 echo "📨 Sending POST request to local function..."
 echo "📂 Processing file: $SAMPLE_FILE"
