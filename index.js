@@ -52,6 +52,11 @@ let CUSTOMER_EVARS = null;
 let CUSTOMER_PROPS = null;
 let CUSTOMER_CUSTOM_EVENTS = null;
 
+// Pre-computed header transformation maps for performance
+let evarMap = null;
+let propMap = null;
+let headerTransformMap = null;
+
 // Lazy load lookup tables only when needed - with parallel loading
 async function initializeLookups() {
 	// Check if any lookups need to be loaded
@@ -99,11 +104,58 @@ async function initializeLookups() {
 	}
 
 	// Wait for all to complete
+	log.debug(`Starting parallel loading of ${promises.length} lookup tables...`);
 	const results = await Promise.all(promises);
 
 	loadTimer.stop(false);
 	log.debug(`Parallel loading completed in ${loadTimer.report(false).human}`);
 	results.forEach(r => log.debug(`\t- Loaded ${r.count} ${r.type}`));
+}
+
+// Build pre-computed header transformation maps for ultra-fast lookups
+function buildHeaderTransformMaps() {
+	log.debug('Building header transformation maps...');
+	
+	// Convert customer lookups from arrays to Maps for O(1) lookups
+	if (CUSTOMER_EVARS) {
+		evarMap = new Map();
+		CUSTOMER_EVARS.forEach(evar => {
+			evarMap.set(evar["Evar #"], evar.Name);
+		});
+	}
+	
+	if (CUSTOMER_PROPS) {
+		propMap = new Map();
+		CUSTOMER_PROPS.forEach(prop => {
+			propMap.set(prop["Property #"], prop.Name);
+		});
+	}
+	
+	// Pre-compute all header transformations
+	headerTransformMap = new Map();
+	headers.forEach((header, index) => {
+		let transformedHeader = header.trim();
+		
+		// Pre-compute evar transformations
+		if (evarMap && (header.toLowerCase().startsWith("evar") || header.toLowerCase().startsWith("post_evar"))) {
+			const evarNum = header.match(/\d+/)?.[0];
+			if (evarNum && evarMap.has(evarNum)) {
+				transformedHeader = evarMap.get(evarNum);
+			}
+		}
+		
+		// Pre-compute prop transformations
+		if (propMap && (header.toLowerCase().startsWith("prop") || header.toLowerCase().startsWith("post_prop"))) {
+			const propNum = header.match(/\d+/)?.[0];
+			if (propNum && propMap.has(propNum)) {
+				transformedHeader = propMap.get(propNum);
+			}
+		}
+		
+		headerTransformMap.set(index, transformedHeader);
+	});
+	
+	log.debug(`Pre-computed ${headerTransformMap.size} header transformations`);
 }
 
 
@@ -147,6 +199,9 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		CUSTOMER_EVARS = LOOKUPS.evars || null;
 		CUSTOMER_PROPS = LOOKUPS.props || null;
 		CUSTOMER_CUSTOM_EVENTS = LOOKUPS.custom_events || null;
+		
+		// Pre-compute header transformation maps for performance
+		buildHeaderTransformMaps();
 	}
 
 	const timer = u.timer('transform');
@@ -253,12 +308,12 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		// Generate output filename
 		let outputBaseName = path.basename(cloud_path);
 		if (outputBaseName.endsWith('.tsv.gz')) {
-			outputBaseName = outputBaseName.replace('.tsv.gz', '.ndjson.gz');
+			outputBaseName = outputBaseName.replace('.tsv.gz', '.ndjson');
 		} else if (outputBaseName.endsWith('.tsv')) {
-			outputBaseName = outputBaseName.replace('.tsv', '.ndjson.gz');
+			outputBaseName = outputBaseName.replace('.tsv', '.ndjson');
 		} else {
 			const nameWithoutExt = path.parse(outputBaseName).name;
-			outputBaseName = nameWithoutExt + '.ndjson.gz';
+			outputBaseName = nameWithoutExt + '.ndjson';
 		}
 
 		const destination = path.join(outputPath, outputBaseName);
@@ -266,10 +321,8 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 
 		writeStream = storage.bucket(outputBucket).file(destination).createWriteStream({
 			metadata: {
-				contentType: 'application/x-ndjson',
-				contentEncoding: 'gzip'
-			},
-			gzip: true
+				contentType: 'application/x-ndjson'
+			}
 		});
 
 	} else {
@@ -290,9 +343,11 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		skipEmptyLines: true,
 		chunkSize: PERFORMANCE.PARSE_CHUNK_SIZE, // Configurable parsing chunk size
 		transformHeader: function (header, index) {
-			// debugger;
-			let likelyHeader;
-			likelyHeader = headers[index].trim();
+			// Ultra-fast O(1) lookup using pre-computed header transformations
+			// This replaces expensive regex and array searches with a simple Map lookup
+			return headerTransformMap ? headerTransformMap.get(index) : headers[index]?.trim();
+
+			// LEAVE THIS IN
 			if (!likelyHeader && NODE_ENV === "dev") debugger;
 
 			if (CUSTOMER_EVARS) {
@@ -469,12 +524,12 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		const { bucket: outputBucket, file: outputPath } = u.parseGCSUri(dest_path);
 		let outputBaseName = path.basename(cloud_path);
 		if (outputBaseName.endsWith('.tsv.gz')) {
-			outputBaseName = outputBaseName.replace('.tsv.gz', '.ndjson.gz');
+			outputBaseName = outputBaseName.replace('.tsv.gz', '.ndjson');
 		} else if (outputBaseName.endsWith('.tsv')) {
-			outputBaseName = outputBaseName.replace('.tsv', '.ndjson.gz');
+			outputBaseName = outputBaseName.replace('.tsv', '.ndjson');
 		} else {
 			const nameWithoutExt = path.parse(outputBaseName).name;
-			outputBaseName = nameWithoutExt + '.ndjson.gz';
+			outputBaseName = nameWithoutExt + '.ndjson';
 		}
 		const destination = path.join(outputPath, outputBaseName);
 		return { ...timer.report(false), source: cloud_path, destination: `gs://${outputBucket}/${destination}` };
@@ -485,10 +540,10 @@ async function main(cloud_path, dest_path, LOOKUPS = {}) {
 		const { bucket, file: upload_path } = u.parseGCSUri(dest_path);
 		log.debug(`uploading to ${upload_path}`);
 
-		// For GCS upload, add .gz extension since we're compressing during upload
-		const uploadFileName = TEMP_FILE_TRANSFORMED.replace('.ndjson', '.ndjson.gz');
+		// For GCS upload, keep the .ndjson extension (no compression)
+		const uploadFileName = TEMP_FILE_TRANSFORMED; // Already has .ndjson extension
 		const destination = path.join(upload_path, uploadFileName);
-		const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: true });
+		const [uploaded] = await storage.bucket(bucket).upload(TEMP_FILE_TRANSFORMED_PATH, { destination, gzip: false });
 
 		// Clean up temp files after successful upload
 		await cleanupTempFiles();
@@ -734,8 +789,6 @@ function cleanAdobeRaw(value, header, foo) {
 		value = events;
 	}
 
-
-
 	//nested json objects
 	if (isJSON(value)) {
 		try {
@@ -748,29 +801,6 @@ function cleanAdobeRaw(value, header, foo) {
 		}
 	}
 
-	//post_event_list is where we define events; a "hit" is multiple events
-	// if (header === "post_event_list") {
-	// 	const events = value.split(',').map(a => a.trim());
-	// 	const eventNames = events.map(event => {
-	// 		//some events are like 704=20... where 704 is the custom event id and 20 is the duration
-	// 		if (event.includes("=")) {
-	// 			event = event.split("=")[0];
-	// 		}
-
-	// 		//resolving metrics from metrics.csv
-	// 		// if (metrics.get(event)) return metrics.get(event);
-
-	// 		//resolve standard events from eventStandard.csv, although this should almost never happen
-	// 		else if (standardEventList.get(event)) return standardEventList.get(event);
-
-	// 		//if we can't resolve the event name, return it's number
-	// 		else {
-	// 			return event;
-	// 		}
-	// 	});
-
-	// 	return eventNames.filter(a => a);
-	// }
 	return value;
 }
 
@@ -791,7 +821,19 @@ function isJSON(string) {
 	}
 };
 
+function quickHash(str) {
+	let hash = 5381; // Initial hash value (prime number)
+	let i = str.length;
 
+	while (i) {
+		// Multiply by 33 and XOR with the character code
+		hash = (hash * 33) ^ str.charCodeAt(--i);
+	}
+
+	// Convert to an unsigned 32-bit integer, then to a hexadecimal string,
+	// and pad with leading zeros to ensure a consistent 8-character length.
+	return (hash >>> 0).toString(16).padStart(8, '0');
+}
 
 async function getLookups(standardLookupsFolder) {
 	const standardLookups = await u.ls(path.resolve(standardLookupsFolder));
@@ -841,26 +883,6 @@ async function getHashMap(customLookupsFile, replacePhrase, keyCol = 0, ValueCol
 	return lookup;
 }
 
-async function getWhitelist(file, column = 0, separator = "/") {
-	// Load and parse file
-	let rawFile = await u.load(file);
-	let parsedFile = Papa.parse(rawFile, { header: false }).data;
-
-	// Create whitelist and immediately null intermediate vars to free memory
-	const whitelist = parsedFile.map(i => i[column].split(separator)[1]).filter(a => a);
-
-	// Explicit cleanup
-	rawFile = null;
-	parsedFile = null;
-
-	// Force garbage collection hint (if available)
-	if (global.gc && NODE_ENV === 'dev') {
-		global.gc();
-	}
-
-	return whitelist;
-}
-
 async function getHeaders(headersFile) {
 	// Load and parse file
 	let rawFile = await u.load(headersFile);
@@ -881,34 +903,6 @@ async function getHeaders(headersFile) {
 	return headers;
 }
 
-function* chunks(arr, n) {
-	for (let i = 0; i < arr.length; i += n) {
-		yield arr.slice(i, i + n);
-	}
-}
 
-/**
- * Generates a non-cryptographic hash from a string using the DJB2 algorithm,
- * and returns it as a hexadecimal string.
- * It's fast and "good enough" for many uniqueness checks (e.g., internal IDs,
- * basic caching keys) where cryptographic security or perfect collision
- * resistance isn't required.
- *
- * @param {string} str The input string to hash.
- * @returns {string} The generated hash as an 8-character hexadecimal string.
- */
-function quickHash(str) {
-	let hash = 5381; // Initial hash value (prime number)
-	let i = str.length;
-
-	while (i) {
-		// Multiply by 33 and XOR with the character code
-		hash = (hash * 33) ^ str.charCodeAt(--i);
-	}
-
-	// Convert to an unsigned 32-bit integer, then to a hexadecimal string,
-	// and pad with leading zeros to ensure a consistent 8-character length.
-	return (hash >>> 0).toString(16).padStart(8, '0');
-}
 
 export default main;
